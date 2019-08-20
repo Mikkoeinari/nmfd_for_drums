@@ -199,38 +199,6 @@ def to_midinote(notes):
     """
     return list(MIDINOTES[i] for i in notes)
 
-
-def getPeaksFromBuffer(filt_spec, numHits):
-    """
-
-    :param filt_spec: numpy array, the filtered spectrogram containing sound checked drum audio
-
-    :param numHits: int, the number of hits to recover from filt_spec
-
-    :return: numpy array, peak locations in filt_spec
-    """
-    threshold = 1
-    searchSpeed = .1
-    H0 = onset_detection.superflux(spec_x=filt_spec.T, win_size=8)
-    peaks = onset_detection.pick_onsets(H0, threshold=threshold)
-    changed = False
-    last = 0
-    while (peaks.shape != (numHits,)):
-        # Make sure we don't go over numHits
-        # There is a chance of an infinite loop here!!! Make sure that don't happen
-        if (peaks.shape[0] > numHits) or (peaks.shape[0] < last):
-            if changed == False:
-                searchSpeed = searchSpeed / 2
-            changed = True
-            threshold += searchSpeed
-        else:
-            changed = False
-            threshold -= searchSpeed
-        last = peaks.shape[0]
-        peaks = onset_detection.pick_onsets(H0, threshold=threshold)
-    return peaks
-
-
 def get_Wpre(drumkit, max_n_frames=max_n_frames):
     total_heads = 0
     global total_priors

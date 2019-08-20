@@ -1,60 +1,8 @@
 '''
 This module handles Onset Detection tasks
 '''
-
-from scipy.ndimage.filters import maximum_filter
 from scipy.signal import argrelmax
 import numpy as np
-
-# superlux from madmom (Boeck et al)
-def superflux(spec_x=[], A=None, B=None, win_size=8):
-    """
-    Calculate the superflux envelope according to Boeck et al.
-
-    :param spec_x: optional, numpy array, A Spectrogram the superflux envelope is calculated from, X
-    :param A: optional, numpy array, frequency response of the decomposed spectrogram, W
-    :param B: optional, numpy array, activations of a decomposed spectrogram, H
-    :param win_size: int, Hann window size, used to smooth the recomposition of
-
-    :return: Superflux ODF of a spectrogram
-    :notes: Must check inputs so that A and B have to be present together
-    """
-
-    # if A and B, the spec_x is recalculated
-    if A is not None:
-        # window function
-        kernel = np.hamming(win_size)
-
-        # apply window
-        B = np.convolve(B, kernel, 'same')
-
-        # rebuild spectrogram
-
-        spec_x = np.outer(A, B)
-
-    # To log magnitude
-    spec_x = np.log(spec_x * 1 + 1)
-
-    diff = np.zeros_like(spec_x.T)
-
-    # Apply max filter
-    max_spec = maximum_filter(spec_x.T, size=(1, 3))
-
-    # Spectral difference
-    diff[1:] = (spec_x.T[1:] - max_spec[: -1])
-
-    # Keep only positive difference
-    pos_diff = np.maximum(0, diff)
-
-    # Sum bins
-    sf = np.sum(pos_diff, axis=1)
-
-    # normalize
-    sf = sf / max(sf)
-
-    # return ODF
-    return sf
-
 
 def pick_onsets(F, threshold=0.15, w=3.5):
     """

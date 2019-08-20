@@ -6,80 +6,8 @@ import re
 import time
 import pandas as pd
 from python.utils import *
-import python.drumsynth as drumsynth
 from scipy.io import wavfile
 import pickle
-
-
-###
-def soundcheckDrum(drumkit_path, drumId):
-    """
-    Perform souncheck on a drum and store the audio
-    :param drumkit_path: Drumkit folder
-    :param drumId: int, Name of the drum
-    :return: None
-    """
-    buffer = drumsynth.record_part(100)
-    print(buffer.shape, buffer.min(), buffer.max())
-    wavfile.write('{}/drum{}.wav'.format(drumkit_path, drumId),rate=SAMPLE_RATE, data=buffer)
-
-def initKitBG(drumkit_path, L=10, drumwise=True, method='NMFD'):
-    """
-    Initialize drumkit from completed soundcheck audio. Finds prior templates for source separation,
-    recalculates thresholds for peak picking, saves information to drum objects
-    and stores the drumkit as a pickled file.
-    :param drumkit_path: Folder containing soundcheck audio
-    :param K: int, max number prior templates per drum
-    :param L: int, number of signal frames to use in templates
-    :param drumwise: Boolean, perform drumwise peak picking threshold recalculation
-    or use same threshold for all drums
-    :param method: 'NMFD' or 'NMF', the source separation approach to use
-    :return: None
-    """
-    global drumkit
-    drumkit=[]
-    #read drums from folder
-    kit = [f for f in os.listdir(drumkit_path) if not f.startswith('.')]
-    kit.sort()
-    for i in range(len(kit)):
-        # HACK!!! remove when you have the time!!!
-        if (kit[i][:4] != 'drum' or len(kit[i]) > 10): continue
-        #set buffer
-        sr,buffer = wavfile.read("{}/{}".format(drumkit_path, kit[i]), mmap=True)
-        #preprocess
-        filt_spec = stft(buffer)
-
-        #find onsets
-        peaks = getPeaksFromBuffer(filt_spec, N_PEAKS)
-        if(peaks.shape[0]<N_PEAKS):
-            raise Exception('drum nr. {} does not have the correct number of peaks, please re check'.format(i))
-        # mean of cluster center
-        freqtemps = findDefBins(peaks, filt_spec, L)
-
-        # use OPTICS. Defines parameters for automatic clustering automatically!
-        # freqtemps = findDefBinsOPTICS(peaks, filt_spec, L)
-
-        # Store the start locations of different drums and concatenate soundcheck file
-        if i == 0:
-            filt_spec_all = filt_spec
-            shifts = [0]
-        else:
-            shift = filt_spec_all.shape[0]
-            filt_spec_all = np.vstack((filt_spec_all, filt_spec))
-            shifts.append(shift)
-
-        # put drums in a list of drums
-        drumkit.append(
-            Drum(name=[int(re.findall('\d+', kit[i])[0])], peaks=peaks, heads=freqtemps[0], tails=freqtemps[1],
-                 threshold=0,
-                 midinote=MIDINOTES[int(re.findall('\d+', kit[i])[0])]))
-
-    # recalculate all threshods for peak picking
-    recalculate_thresholds(filt_spec_all, shifts, drumkit, drumwise=drumwise, method=method)
-
-    # Pickle the important data
-    pickle.dump(drumkit, open("{}/pickledDrumkit.drm".format(drumkit_path), 'wb'))
-
 
 def loadKit(drumkit_path):
     """
@@ -91,78 +19,7 @@ def loadKit(drumkit_path):
     drumkit = pickle.load(open("{}/pickledDrumkit.drm".format(drumkit_path), 'rb'))
     return drumkit
 
-
-def playLive(drumkit_path, thresholdAdj=0.0,part_length=30, saveAll=False, createMidi=False):
-    """
-    #Records one drum part of the player transcribes it and stores to a csv or also to a midi file
-    The audio is not saved.
-    :param drumkit_path: Folder where parts are stored
-    :param thresholdAdj: float, adjust all drums thresholds if needed
-    :param saveAll: Boolean, weather to save every transcription in a separate file
-    :param createMidi: Boolean, weather to save a midi file of the transcription
-    :return: String, float, Filename of the recorded part and
-    average tempo (relative to default tempo) of the part
-    """
-
-    # Record a take
-    try:
-        buffer = drumsynth.record_part(part_length)
-    except Exception as e:
-        print('liveplay:', e)
-    # transcribe the take
-    plst, deltaTempo = processLiveAudio(liveBuffer=buffer, drumkit=drumkit,
-                                        iters=96, method='NMFD_iters', thresholdAdj=thresholdAdj)
-    # Make an annotation of the separate drums hit times
-    times = []
-    bintimes = []
-    for i in plst:
-        hits = i.get_hits()
-        if not len(hits):
-            continue
-        binhits = i.get_hits()
-        hits = frame_to_time(hits)
-        labels = np.full(len(hits), i.get_midinote(), np.int64)
-        binlabels = np.full(len(binhits), i.get_name(), np.int64)
-        inst = zip(hits, labels)
-        bininst = zip(binhits, binlabels)
-        times.extend(inst)
-        bintimes.extend(bininst)
-    if not len(times):
-        print('no hits found from audio!')
-        return False
-    times.sort()
-    bintimes.sort()
-    bintimes = mergerowsandencode(bintimes)
-    df = pd.DataFrame(times, columns=['time', 'inst'])
-    df['duration'] = pd.Series(np.full((len(times)), 0, np.int64))
-    df['vel'] = pd.Series(np.full((len(times)), 127, np.int64))
-    bindf = pd.DataFrame(bintimes, columns=['inst'])
-
-    if saveAll:
-        fileName = '{}/takes/testbeat{}.csv'.format(drumkit_path, time.time())
-    else:
-        fileName = '{}/takes/lastTake.csv'.format(drumkit_path)
-
-    bindf.to_csv(fileName, index=True, header=False, sep="\t")
-    df = df[df.time != 0]
-    print('done!')
-
-    if createMidi:
-        import madmom
-        madmom.io.midi.write_midi(df.values, 'midi_testit_.mid')
-        generated = splitrowsanddecode(bintimes)
-        gen = pd.DataFrame(generated, columns=['time', 'inst'])
-        gen.to_csv('generated_enc_dec0.csv', index=False, header=None, sep='\t')
-        # change to time and midinotes
-        gen['time'] = frame_to_time(gen['time'])
-        gen['inst'] = to_midinote(gen['inst'])
-        gen['duration'] = pd.Series(np.full((len(generated)), 0, np.int64))
-        gen['vel'] = pd.Series(np.full((len(generated)), 127, np.int64))
-        madmom.io.midi.write_midi(gen.values, 'midi_testit_enc_dec0.mid')
-
-    return fileName, float(deltaTempo)
-
-def processLiveAudio(liveBuffer=None,spectrogram=None, drumkit=None, iters=0, method='NMFD', thresholdAdj=0.):
+def process_drum_data(liveBuffer=None,spectrogram=None, drumkit=None, iters=0, method='NMFD', thresholdAdj=0.):
     """
     main logic for source separation, onset detection and tempo extraction and quantization
     :param liveBuffer: numpy array, the source audio
@@ -254,11 +111,6 @@ def extract_training_material(audio_folder, annotation_folder, train_audio_takes
 
     for f in train_annotation:
         print('.', end='', flush=True)
-        print(audio_folder + f.split('.')[0] + '.wav')
-        #import librosa.core
-        #file, sr=librosa.core.load(audio_folder + f.split('.')[0] + '.wav')
-        #file=librosa.core.resample(file, sr, 44100)
-        #wavfile.write(audio_folder + f.split('.')[0] + ' res.wav',44100, file)
         _,buffer = wavfile.read(audio_folder + f.split('.')[0] + '.wav')
         if len(buffer.shape) > 1:
             buffer = buffer[:, 0] + buffer[:, 1]
@@ -349,13 +201,10 @@ def run_folder(audio_folder, annotation_folder):
     train_ind = np.random.choice(len(annotation), int(len(annotation) / 3))
     mask = np.zeros(annotation.shape, dtype=bool)
     mask[train_ind] = True
-    train_audio_takes = audio_takes#[~mask]
-    test_audio_takes = audio_takes#[mask]
-    train_annotation = annotation#[~mask]
-    test_annotation = annotation#[mask]
-    #drumkit=pickle.load(open("{}/pickledDrumkit.drm".format('.'), 'rb'))
-    #for i in drumkit:
-    #    i.set_threshold(i.get_threshold()+.7)
+    train_audio_takes = audio_takes[~mask]
+    test_audio_takes = audio_takes[mask]
+    train_annotation = annotation[~mask]
+    test_annotation = annotation[mask]
     extract_training_material(audio_folder, annotation_folder, train_audio_takes, train_annotation)
     loadKit('.')
     sum = [0, 0, 0]
@@ -401,7 +250,7 @@ def test_run(file_path=None, annotated=False, files=[None, None], method='NMFD',
 
         # initKitBG(filePath, 9, K=n)#, rm_win=n, bs_len=350)
         # t0 = time.time()
-        plst, i = processLiveAudio(liveBuffer=buffer[skip_secs:],
+        plst, i = process_drum_data(liveBuffer=buffer[skip_secs:],
                                    drumkit=drumkit, iters=75, method=method)
         # print('\nNMFDtime:%0.2f' % (time.time() - t0))
         # Print scores if annotated
@@ -437,7 +286,7 @@ def test_run(file_path=None, annotated=False, files=[None, None], method='NMFD',
                 print('Recall: {}'.format(rec))
                 print('F-score: {}'.format(fsc))
     return [prec, rec, fsc]
-    
+
 #todo Does the part lenght affect the error_limit?!?!?!?!?
 #do we want fixed iterations, it's now fixed!!!
 #do testing!
@@ -460,14 +309,13 @@ def debug():
     prec_tot = 0
     rec_tot = 0
     fscore_tot = 0
-    rounds = 1
+    rounds = 30
+    t0 = time.time()
     for i in range(rounds):
-        #prec, rec, fscore = run_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/',
-        #                               annotation_folder='../../libtrein/SMT_DRUMS/annotations/')
         #prec, rec, fscore=run_folder(audio_folder='../../libtrein/ENST_Drums/audio_drums/', annotation_folder='../../libtrein/ENST_Drums/annotation/')
-        #prec, rec, fscore=run_folder(audio_folder='../../libtrein/ENST_2/audio_drum_acc/', annotation_folder='../../libtrein/ENST_2/annotations/')
 
         prec, rec, fscore=run_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/', annotation_folder='../../libtrein/SMT_DRUMS/annotations/')
+
         #prec, rec, fscore=run_folder(audio_folder='../../libtrein/rbma_13/audio/', annotation_folder='../../libtrein/rbma_13/annotations/drums/')
 
         prec_tot += prec
@@ -477,6 +325,7 @@ def debug():
     print('precision=', prec_tot / rounds)
     print('recall=', rec_tot / rounds)
     print('f-score=', fscore_tot / rounds)
+    print('Run time:', time.time() - t0)
     # run_folder(audio_folder='../../libtrein/rbma_13/audio/', annotation_folder='../../libtrein/rbma_13/annotations/drums/')
 
     # testOnsDet(file, alg=0, ppAlg=0)
