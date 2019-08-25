@@ -1,7 +1,7 @@
-import drum_off.nmfd as nmfd
-import drum_off.onset_detection as onset_detection
+import python.nmfd as nmfd
+import python.onset_detection as onset_detection
 import numpy as np
-from drum_off.constants import *
+from python.constants import *
 from scipy.fftpack import fft
 from scipy.ndimage.filters import median_filter
 
@@ -38,27 +38,27 @@ class Drum(object):
 
     """
 
-    def __init__(self, name, peaks, heads=None, tails=None,
+    def __init__(self, name, peaks, heads=None, tails=None,ntemplates=0,
                  midinote=MIDINOTE, threshold=THRESHOLD, hitlist=None):
 
         # set attributes
         self.name = name
 
         self.peaks = peaks
+        self.ntemplates=ntemplates
 
-        if len(tails):
-            self.tails = tails
-        if len(heads):
-            self.heads = heads
+        self.tails = tails
+
+        self.heads = heads
         if midinote:
             self.midinote = midinote
         if threshold:
             self.threshold = float(threshold)
         else:
             self.threshold = 0.
-
         if hitlist:
             self.hitlist = hitlist
+        self.set_ntemplates()
 
     def set_hits(self, hitlist):
         self.hitlist = hitlist
@@ -90,6 +90,7 @@ class Drum(object):
     def set_tails(self, tails):
         self.tails = tails
 
+
     def get_tails(self):
         return self.tails
 
@@ -104,6 +105,13 @@ class Drum(object):
 
     def get_threshold(self):
         return self.threshold
+    def set_ntemplates(self):
+        if self.heads and self.tails:
+            self.ntemplates=self.heads.shape[2]+self.tails.shape[2]
+        else:
+            self.ntemplates=0
+    def get_ntemplates(self):
+        return self.ntemplates
 
 
 def create_templates_optics(frames=None, filteredSpec=None, ConvFrames=None, matrices=None):
@@ -155,7 +163,7 @@ def create_templates_optics(frames=None, filteredSpec=None, ConvFrames=None, mat
         tails[:, :, i] = np.reshape(np.mean(a2[unique_labels == i, :], axis=0), (FILTERBANK_SHAPE, max_n_frames),
                                     order='F')
     total_priors += K1.shape[0] + K2.shape[0]
-    print('total OPTICS clusters', K1.shape[0] + K2.shape[0], total_priors)
+    print('OPTICS clusters', K1.shape[0] + K2.shape[0],'total:', total_priors)
     return (heads, tails, K1, K2)
 
 
@@ -202,7 +210,10 @@ def to_midinote(notes):
 def get_Wpre(drumkit, max_n_frames=max_n_frames):
     total_heads = 0
     global total_priors
-    total_priors = len(drumkit) * 2
+    if total_priors==0:
+        total_priors=sum([f.get_ntemplates() for f in drumkit])
+        print(total_priors)
+        #total_priors = len(drumkit) * 2
     Wpre = np.zeros((FILTERBANK_SHAPE, total_priors, max_n_frames))
     for i in range(len(drumkit)):
         heads = drumkit[i].get_heads()
@@ -388,7 +399,7 @@ def stft(audio_signal, streaming=False, hs=HOP_SIZE,
     data = np.abs(data)
     # filter data
     filterbank = rect_bark_filter_bank(filter_height=0.1,
-                                       min_freq=20, max_freq=17000, n_bins=49, fs=fs, sr=sr)
+                                       min_freq=20, max_freq=17000, n_bins=FILTERBANK_SHAPE+1, fs=fs, sr=sr)
     data = data @ filterbank
     # for streaming we have to remove sys.error compesation.
     win = np.hanning(4)
@@ -467,7 +478,6 @@ def k_in_n(k, n, window=1):
         for j in k:
             if (j - window <= i <= j + window):
                 hits += 1
-
                 break
             if (j + window > i):
                 break
