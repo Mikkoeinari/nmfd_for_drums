@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.io import wavfile
 
-import python.vsteams as vs
+import python.wide_crnn as vs
 from python.utils import *
 
 
@@ -504,7 +504,7 @@ def debug():
         #fscore_tot += fscore
         #break
         prec, rec, fscore = rnn_test_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/',
-                                            annotation_folder='../../libtrein/SMT_DRUMS/annotations/', train=True,
+                                            annotation_folder='../../libtrein/SMT_DRUMS/annotations/', train=False,
                                             test_full_dataset=False)
 
         # prec, rec, fscore=rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',

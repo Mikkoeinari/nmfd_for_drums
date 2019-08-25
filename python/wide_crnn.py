@@ -385,4 +385,4 @@ def predict_odf(model, data):
 #f-score= 0.9216351926836277
 #Run time: 7058.523633003235
 
-#gen
+#gen 0.85268(epoch9)
