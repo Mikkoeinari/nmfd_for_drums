@@ -298,40 +298,72 @@ def test_run(file_path=None, annotated=False, files=[None, None], method='NMFD',
 
 def score_rnn_result(odf, annotation_file):
     hits = pd.read_csv(annotation_file, sep="\t", header=None)
-    precision, recall, fscore, true_tot = 0, 0, 0, 0
-    thresholds = [.5, .5, .5]
+    tp, fp, fn, fsc_mean = 0, 0, 0, 0
+    thresholds = [0., 0., 0.]
+    #thresholds=[0.48148148, 0.57407407, 0.37037037]
+    good_thresh = np.array(thresholds)
+    drumwise_fscore = np.zeros((3))
     for i in range(odf.shape[1]):
-        drum_odf = odf[:, i]
-        peaks = onset_detection.pick_onsets(drum_odf, threshold=thresholds[i], w=3.5)
+        drum_scores = [0, 0, 0]
+        max_fsc=0.
+        for l in range(10):
+            threshold = 0. + l / 10.
+        #threshold=thresholds[i]
+            drum_odf = odf[:, i]
+            peaks = onset_detection.pick_onsets(drum_odf, threshold=threshold, w=3.5)
+            predHits = frame_to_time(peaks)
+            actHits = hits[hits[1] == i]
+            actHits = actHits.iloc[:, 0]
+            true_positive = k_in_n(actHits.values, predHits, window=0.02)
+            prec, rec, f_drum = f_score(true_positive, predHits.shape[0], actHits.shape[0])
 
-        predHits = frame_to_time(peaks)
-        actHits = hits[hits[1] == i]
-        actHits = actHits.iloc[:, 0]
-        trueHits = k_in_n(actHits.values, predHits, window=0.02)
-        prec, rec, f_drum = f_score(trueHits, predHits.shape[0], actHits.shape[0])
-        precision += prec * actHits.shape[0]
-        recall += rec * actHits.shape[0]
-        fscore += (f_drum * actHits.shape[0])
-        true_tot += actHits.shape[0]
-        print(prec, rec, f_drum)
+            if f_drum > max_fsc:
+                max_fsc = f_drum
+                good_thresh[i] = threshold
+                drum_scores = [true_positive, predHits.shape[0] - true_positive, actHits.shape[0] - true_positive]
 
-    prec = precision / true_tot
-    rec = recall / true_tot
-    fsc = fscore / true_tot
+        tp += drum_scores[0]
+        fp += drum_scores[1]
+        fn += drum_scores[2]
+        drumwise_fscore[i]=max_fsc
+        print(i,drum_scores, max_fsc, good_thresh[i])
+    try:
+        prec = tp / (tp + fp)
+        rec = tp / (tp + fn)
+        fsc = 2 * tp / (2 * tp + fp + fn)
+    except ZeroDivisionError as dbz:
+        print(dbz)
+        if tp==0 and fn==0:
+            return [1.,1.,1.,drumwise_fscore,good_thresh]
+        else:
+            return [0,0,0,0, good_thresh]
+    fscm = np.mean(drumwise_fscore)
     print('Precision: {}'.format(prec))
     print('Recall: {}'.format(rec))
-    print('F-score: {}'.format(fsc))
-    return [prec, rec, fsc]
+    print('F-score sum: {}'.format(fsc))
+    print('F-score mean: {}'.format(fscm))
+    print('Opt_thresh:', good_thresh)
+    return [tp, fp, fn, drumwise_fscore, good_thresh]
+
+
+from madmom.io.audio import load_audio_file  # to use mp3 in midi dataset
 
 
 def get_audio_and_annotation(audio_file_path, annot_file_path):
-    _, buffer = wavfile.read(audio_file_path)
+    try:
+        buffer, sr = load_audio_file(audio_file_path)
+    except:
+        return None, None  # Skip broken files
     buffer = buffer / np.max(np.abs(buffer))
     if len(buffer.shape) > 1:
         buffer = buffer[:, 0] + buffer[:, 1]
-    filt_spec = stft(buffer)
-    hits = pd.read_csv(annot_file_path, sep="\t", header=None)
-    hits.iloc[:, 0] = time_to_frame(hits.iloc[:, 0], SAMPLE_RATE, HOP_SIZE).astype(int)
+    filt_spec = stft(buffer, add_diff=True)
+
+    try:
+        hits = pd.read_csv(annot_file_path, sep="\t", header=None)
+        hits.iloc[:, 0] = time_to_frame(hits.iloc[:, 0], SAMPLE_RATE, HOP_SIZE).astype(int)
+    except Exception as e: #if no hits in annotation, return
+        return filt_spec, None
     return filt_spec, hits.values
 
 
@@ -385,40 +417,61 @@ def rnn_test(audio_file_path, annot_file_path):
     plt.show()
 
 
-def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_dataset=False):
-    annotation = [f for f in os.listdir(annotation_folder) if not f.startswith('.')]
-    take_names = set([i.split(".")[0] for i in annotation])
-    audio_takes = np.array(sorted([i + '.wav' for i in take_names]))
-    annotation = np.array(sorted(annotation))
-    np.random.seed(7175)
-    train_ind = np.random.choice(len(annotation), int(len(annotation) / 3))
-    mask = np.zeros(annotation.shape, dtype=bool)
-    mask[train_ind] = True
-    test_audio_takes = audio_takes[mask]
-    train_audio_takes=audio_takes[~mask]
-    train_annotation = annotation[~mask]
-    test_annotation = annotation[mask]
-    gen=True
+def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_dataset=False,
+                    file_ex='.wav', prefab_splits=None):
+    if prefab_splits is not None:
+        train_annotation = list(pd.read_csv(prefab_splits + '3-fold_cv_0.txt', sep="\t", header=None, usecols=[0]).values.flatten())
+        train_annotation += list(pd.read_csv(prefab_splits + '3-fold_cv_acc_0.txt', sep="\t", header=None).values.flatten())
+        train_annotation += list(pd.read_csv(prefab_splits + '3-fold_cv_1.txt', sep="\t", header=None).values.flatten())
+        train_annotation += list(pd.read_csv(prefab_splits + '3-fold_cv_acc_1.txt', sep="\t", header=None).values.flatten())
+        test_annotation = list(pd.read_csv(prefab_splits + '3-fold_cv_2.txt', sep="\t", header=None).values.flatten())
+        test_annotation += list(pd.read_csv(prefab_splits + '3-fold_cv_acc_2.txt', sep="\t", header=None).values.flatten())
+        test_audio_takes=test_annotation
+        for f in range(len(train_annotation)):
+            train_annotation[f] = train_annotation[f] + '.txt'
+        for f in range(len(test_annotation)):
+            test_annotation[f] = test_annotation[f] + '.txt'
+        for f in range(len(test_audio_takes)):
+            test_audio_takes[f] = test_audio_takes[f] + file_ex
+
+    else:
+        annotation = [f for f in os.listdir(annotation_folder) if not f.startswith('.')]
+        audio = [f for f in os.listdir(audio_folder) if not f.startswith('.')]
+        take_names = [os.path.splitext(i)[0] for i in annotation]
+        take_names2 = [os.path.splitext(i)[0] for i in audio]
+        good_takes = set(np.intersect1d(take_names, take_names2))
+        audio_takes = np.array(sorted([i + file_ex for i in good_takes]))
+        annotation = np.array(sorted([i + '.txt' for i in good_takes]))
+        np.random.seed(7175)
+        train_ind = np.random.choice(len(annotation), int(len(annotation) / 3))
+        mask = np.zeros(annotation.shape, dtype=bool)
+        mask[train_ind] = True
+        test_audio_takes = audio_takes[mask]
+        train_annotation = annotation[~mask]
+        test_annotation = annotation[mask]
+
+
+    gen = True
     if train:
         first = True
-        if gen==True:
+        if gen == True:
             print('making a model...')
             model = vs.make_model()
             print('initializing generators...')
-            audios, annotations=[],[]
+            audios, annotations = [], []
             for f in train_annotation:
-                audios.append(audio_folder + f.split('.')[0] + '.wav')
+                audios.append(audio_folder + os.path.splitext(f)[0] + file_ex)
                 annotations.append(annotation_folder + f)
-            gens=vs.make_generators(audios, annotations)
+            gens = vs.make_generators(audios, annotations)
             print('begin training...')
-            vs.train_model(model,generators=gens)
+            vs.train_model(model, generators=gens)
             print('saving model...')
             vs.save_model(model)
         else:
             print('building training set...')
             for f in train_annotation:
                 print('.', end='', flush=True)
-                audio_file_path = audio_folder + f.split('.')[0] + '.wav'
+                audio_file_path = audio_folder + os.path.splitext(f)[0] + file_ex
                 annot_file_path = annotation_folder + f
                 audio, annotation = get_audio_and_annotation(audio_file_path, annot_file_path)
                 # Shuffle training material
@@ -436,7 +489,7 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
                 print('building validation set...')
                 for f in test_annotation:
                     print('.', end='', flush=True)
-                    audio_file_path = audio_folder + f.split('.')[0] + '.wav'
+                    audio_file_path = audio_folder + os.path.splitext(f)[0] + file_ex
                     annot_file_path = annotation_folder + f
                     audio, annotation = get_audio_and_annotation(audio_file_path, annot_file_path)
                     X, y = vs.get_sequences(audio, annotation)
@@ -459,24 +512,41 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
         # model = vs.load_saved_model()
         model = vs.make_model()
         model = vs.restore_best_weigths(model)
-    sum = [0, 0, 0]
+    sum = [0, 0, 0, 0]
+    thre = np.zeros(3)
     if test_full_dataset:
         test_annotation = annotation
-        test_audio_takes=audio_takes
+        test_audio_takes = audio_takes
     for i in range(len(test_annotation)):
         audio, annotation = get_audio_and_annotation(audio_folder + test_audio_takes[i],
                                                      annotation_folder + test_annotation[i])
         # Do not shuffle test material!!!
         X, y = vs.get_sequences(audio, annotation, shuffle_sequences=False)
+        if X is None:
+            continue
         odf = np.squeeze(np.array(vs.predict_odf(model, list(X))), axis=-1).T
         res = score_rnn_result(odf, annotation_folder + test_annotation[i])
         sum[0] += res[0]
         sum[1] += res[1]
         sum[2] += res[2]
-    print('precision=', sum[0] / len(test_annotation))
-    print('recall=', sum[1] / len(test_annotation))
-    print('f-score=', sum[2] / len(test_annotation))
-    return sum[0] / len(test_annotation), sum[1] / len(test_annotation), sum[2] / len(test_annotation)
+        sum[3] += res[3]
+        thre=thre+res[4]
+    prec = sum[0] / (sum[0] + sum[1])
+    rec = sum[0] / (sum[0] + sum[2])
+    fsc = 2 * sum[0] / (2 * sum[0] + sum[1] + sum[2])
+    print('#precision=', prec)
+    print('#recall=', rec)
+    print('#f-score=', fsc)
+    print('#f-score_mean=', np.mean(sum[3]) / len(test_annotation))
+    print('#optimal_thresholds=', thre / len(test_annotation))
+    #print('#precision=', sum[0] / len(test_annotation))
+    #print('#recall=', sum[1] / len(test_annotation))
+    #print('#f-score=', sum[2] / len(test_annotation))
+    #print('#f-score_mean=', sum[3] / len(test_annotation))
+    #print('#optimal_thresholds=', thre / len(test_annotation))
+    return prec, rec, fsc, np.mean(sum[3]) / len(test_annotation), thre / len(test_annotation)
+    #return sum[0] / len(test_annotation), sum[1] / len(test_annotation), sum[2] / len(test_annotation), sum[3] / len(
+    #    test_annotation), thre / len(test_annotation)
 
 
 def debug():
@@ -487,42 +557,48 @@ def debug():
     rounds = 1
     t0 = time.time()
     for i in range(rounds):
-        #prec, rec, fscore = rnn_test_folder(audio_folder='../../libtrein/ENST_Drums/audio_drums/',
+        # rnn_test('../../libtrein/rbma_13/audio/RBMA-13-Track-01.wav','../../libtrein/rbma_13/annotations/drums/RBMA-13-Track-01.txt')
+        # prec, rec, fscore, fscore_sum, thresh  = rnn_test_folder(audio_folder='../../libtrein/ENST_Drums/audio_drums/',
         #                                    annotation_folder='../../libtrein/ENST_Drums/annotation/', train=False,
         #                                    test_full_dataset=True)
-        #prec_tot += prec
-        #rec_tot += rec
-        #fscore_tot += fscore
-        #prec_tot = 0
-        #rec_tot = 0
-        #fscore_tot = 0
-        #prec, rec, fscore = rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
-        #                               annotation_folder='../../libtrein/rbma_13/annotations/drums/', train=False,
-        #                                    test_full_dataset=True)
-        #prec_tot += prec
-        #rec_tot += rec
-        #fscore_tot += fscore
-        #break
-        prec, rec, fscore = rnn_test_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/',
-                                            annotation_folder='../../libtrein/SMT_DRUMS/annotations/', train=False,
-                                            test_full_dataset=False)
+        # prec_tot += prec
+        # rec_tot += rec
+        # fscore_tot += fscore
+        # prec_tot = 0
+        # rec_tot = 0
+        # fscore_tot = 0
 
-        # prec, rec, fscore=rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
-        #  annotation_folder='../../libtrein/rbma_13/annotations/drums/')
+        prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
+                                      annotation_folder='../../libtrein/rbma_13/annotations/drums/', train=False,
+                                           test_full_dataset=True)
         prec_tot += prec
         rec_tot += rec
         fscore_tot += fscore
+        break
+        # prec, rec, fscore, fscore_mean, thresh  = rnn_test_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/',
+        #                                    annotation_folder='../../libtrein/SMT_DRUMS/annotations/', train=False,
+        #                                    test_full_dataset=False, file_ex='.wav')
+        prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/midi/mp3/',
+                                                        annotation_folder='../../libtrein/midi/annotations/drums_3/',
+                                                        train=True,
+                                                        test_full_dataset=False, file_ex='.mp3',
+                                                        prefab_splits='../../libtrein/midi/splits/')
+        # prec, rec, fscore=rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
+        #  annotation_folder='../../libtrein/rbma_13/annotations/drums/')
+        # prec_tot += prec
+        # rec_tot += rec
+        # fscore_tot += fscore
     print('Total numbers for {} rounds:\n'.format(rounds))
-    print('precision=', prec_tot / rounds)
-    print('recall=', rec_tot / rounds)
-    print('f-score=', fscore_tot / rounds)
-    print('Run time:', time.time() - t0)
-    # rnn_test_('../../libtrein/ENST_Drums/audio_drums/b132_MIDI-minus-one_blues-102_sticks.wav',
+    print('#precision=', prec_tot / rounds)
+    print('#recall=', rec_tot / rounds)
+    print('#f-score=', fscore_tot / rounds)
+    print('#Run time:', time.time() - t0)
+    #rnn_test_('../../libtrein/ENST_Drums/audio_drums/b132_MIDI-minus-one_blues-102_sticks.wav',
     #                                                 '../../libtrein/ENST_Drums/annotation/b132_MIDI-minus-one_blues-102_sticks.txtcsv')
     return
     # debug
     # initKitBG('Kits/mcd2/',8,K)
-    #K = 1
+    # K = 1
     # file = './Kits/mcd_pad/'
     method = 'NMFD'
     # file='../DXSamplet/'
@@ -552,10 +628,10 @@ def debug():
         rec_tot += rec
         fscore_tot += fscore
     print('Total numbers for {} rounds:\n'.format(rounds))
-    print('precision=', prec_tot / rounds)
-    print('recall=', rec_tot / rounds)
-    print('f-score=', fscore_tot / rounds)
-    print('Run time:', time.time() - t0)
+    print('#precision=', prec_tot / rounds)
+    print('#recall=', rec_tot / rounds)
+    print('#f-score=', fscore_tot / rounds)
+    print('#Run time:', time.time() - t0)
     # run_folder(audio_folder='../../libtrein/rbma_13/audio/', annotation_folder='../../libtrein/rbma_13/annotations/drums/')
 
     # testOnsDet(file, alg=0, ppAlg=0)
@@ -578,7 +654,120 @@ if __name__ == "__main__":
 # RMBA_tuned precision= 0.5285422876382673
 # RMBA_tuned recall= 0.5327085855254259
 # RMBA_tuned f-score= 0.49552240623032934
+# RMBA midi dataset trained thresh 0.65
+# precision= 0.4790134726783235
+# recall= 0.665387192823069
+# f-score= 0.5162506399359752
+
+
+# precision= 0.5497458124657603 thresh 0.75
+# recall= 0.6725844112342692
+# f-score= 0.5698179670657172
+
+# precision= 0.5695308381880412 thresh 0.8
+# recall= 0.6435227367923977
+# f-score= 0.567005908607843
+
+# precision= 0.5122401277423047 thresh 0.7
+# recall= 0.7627213129810007
+# f-score= 0.5837722931159965
+
+# precision= 0.5891161901466501
+# recall= 0.685746836954462
+# f-score= 0.5934425197097162
+# f-score_mean= 0.49310021327373976
+
+# precision= 0.6237923381707348
+# recall= 0.6126235409921008
+# f-score= 0.5732806725233823
+# f-score_mean= 0.4811008356349879
 
 # precision= 0.8611011368926976
 # recall= 0.8547345567812396
 # f-score= 0.8431150091355888
+
+# rbma(diff)thresh=0.35
+# precision= 0.6915193363731799
+# recall= 0.6657629190633345
+# f-score= 0.6270472792058238
+# f-score_mean= 0.48789800010084167
+# full run unknown thresh
+# precision= 0.7295411699234925
+# recall= 0.5949262577456897
+# f-score= 0.6034105015639512
+# Run time: 8001.366633176804
+
+# 100seq rbma(midi_diff)
+# Untuned thresh
+# precision= 0.5120496139684696
+# recall= 0.7536472851453198
+# f-score= 0.5203449972192418
+# opt thresh
+# precision= 0.7165118681510674
+# recall= 0.6849858349956045
+# f-score= 0.6619000244715111
+# f-score_mean= 0.5113805561760257
+
+#Optimizing run full rbma
+#precision= 0.5199963532486477
+#recall= 0.702277857582598
+#f-score= 0.5975450053255574
+#f-score_mean= 0.560082360091868
+#optimal_thresholds= [0.48148148 0.57407407 0.37037037]
+#precision= 0.4763739085772984
+#recall= 0.6090703878514262
+#f-score= 0.5346110200479133
+#f-score_mean= 0.4818942010890897
+
+#opt small
+#0.04728 slowly...
+#precision= 0.5044124758220503
+#recall= 0.6849989739380259
+#f-score= 0.5809966407324247
+#f-score_mean= 0.5355841739381386
+#optimal_thresholds= [0.45925926 0.52592593 0.4       ]
+#Ei tarpeeks hyvä
+
+
+#with optimals:
+#precision= 0.5190456770358417
+#recall= 0.7723676614451149
+#f-score= 0.6109569257345503
+#f-score_mean= 0.4787483911734634
+#recalc mean/sum<-sota atm.
+#precision= 0.5199963532486477<-sota atm.
+#recall= 0.702277857582598<-sota atm.
+#f-score= 0.5975450053255574<-sota atm.
+#f-score_mean= 0.560082360091868<-sota atm.
+#optimal_thresholds= [0.48148148 0.56296296 0.36296296] <-sota atm.
+
+#koko setti:
+#precision= 0.5474845176266787
+#recall= 0.5657308673400766
+#f-score= 0.5209616649717467
+#f-score_mean= 0.461631309330918
+#1361s.
+#precision= 0.5693574958813838
+#recall= 0.6997367888236485
+#f-score= 0.6278499409573985
+#f-score_mean= 0.4856135522897564
+
+#opt rbma bin_cross 0.9~~
+#precision= 0.5181545092405146
+#recall= 0.651303098707162
+#f-score= 0.5771489880162208
+#f-score_mean= 0.5297449423768857
+#optimal_thresholds= [0.23703704 0.2037037  0.16296296] <- alemmat thresholdit!
+#Run time: 1555.2358839511871
+
+#2nd runs with strat:
+#precision= 0.4758939636671402
+#recall= 0.6461727888364457
+#f-score= 0.5481130761732349
+#f-score_mean= 0.5150106309293039
+#optimal_thresholds= [0.34074074 0.58888889 0.26296296]
+#precision= 0.43246801116318256
+#recall= 0.6741637594910732
+#f-score= 0.5269219048230067
+#f-score_mean= 0.49083054770234785
+#optimal_thresholds= [0.46296296 0.71111111 0.37777778]

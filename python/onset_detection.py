@@ -19,9 +19,7 @@ def pick_onsets(F, threshold=0.15, w=3.5):
     localMaxima = F[localMaximaInd[0]]
 
     # Pick local maxima greater than threshold
-    # (-.2 to move optimal threshold range away from zero in automatic threshold
-    # calculation, This should not make a difference but it does, investigate)
-    onsets = np.where(localMaxima >= threshold -.2)
+    onsets = np.where(localMaxima >= threshold)
     # Onset indices array
     rets = localMaximaInd[0][onsets]
 

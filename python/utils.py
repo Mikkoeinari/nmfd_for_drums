@@ -371,7 +371,7 @@ def rect_bark_filter_bank(filter_height=0.1, min_freq=20, max_freq=20000, n_bins
 
 
 def stft(audio_signal, streaming=False, hs=HOP_SIZE,
-         fs=FRAME_SIZE, sr=SAMPLE_RATE):
+         fs=FRAME_SIZE, sr=SAMPLE_RATE, add_diff=False):
     ##nr. frequency bins = Half of FRAME_SIZE
     n_frames = int(fs / 2)
     # HOP_LENGTH spaced index
@@ -405,7 +405,10 @@ def stft(audio_signal, streaming=False, hs=HOP_SIZE,
     win = np.hanning(4)
     for i in range(data.shape[1]):
         data[:, i] = np.convolve(data[:, i], win, 'same')
-
+    if add_diff:
+        diff=data
+        diff[1:,:]=np.diff(data, n=1, axis=0)
+        data=np.concatenate((data, diff), axis=-1)
     return data
 
 
