@@ -85,8 +85,7 @@ def NMFD(X, iters=128, Wpre=[], include_priors=False,n_heads=1,remove_tails=Fals
     def ISDiv(x,y):
         return (x/y - np.log(x/y) - 1).sum()
 
-    # Itakura-Saito Divergence
-    # precomputed division, gives a little different results, only for the better
+    # Itakura-Saito Divergence 2, x precomputed...
     def ISDiv2(x):
         return (x - np.log(x) - 1).sum()
 
@@ -136,12 +135,11 @@ def NMFD(X, iters=128, Wpre=[], include_priors=False,n_heads=1,remove_tails=Fals
         Lambda = sumLambda(W, H)+eps
         LambHat = X/Lambda + eps
 
-        # 2*eps to ensure the eps don't cancel out each other in the division.
         #err[i] = KLDiv(X + eps, Lambda + eps)
 
         #err[i] = ISDiv(X+eps,Lambda+eps)
 
-        err[i]=ISDiv2(LambHat+eps)#+np.linalg.norm(H,ord=np.inf)*mu
+        err[i]=ISDiv2(LambHat+eps)
 
         # Stopping criteria check
         if (i >= 1):

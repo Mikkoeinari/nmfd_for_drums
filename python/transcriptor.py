@@ -297,7 +297,11 @@ def test_run(file_path=None, annotated=False, files=[None, None], method='NMFD',
 
 
 def score_rnn_result(odf, annotation_file):
-    hits = pd.read_csv(annotation_file, sep="\t", header=None)
+    try:
+        hits = pd.read_csv(annotation_file, sep="\t", header=None)
+    except:
+        print('no drum hits present')
+        return None
     tp, fp, fn, fsc_mean = 0, 0, 0, 0
     thresholds = [0., 0., 0.]
     #thresholds=[0.48148148, 0.57407407, 0.37037037]
@@ -426,13 +430,13 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
         train_annotation += list(pd.read_csv(prefab_splits + '3-fold_cv_acc_1.txt', sep="\t", header=None).values.flatten())
         test_annotation = list(pd.read_csv(prefab_splits + '3-fold_cv_2.txt', sep="\t", header=None).values.flatten())
         test_annotation += list(pd.read_csv(prefab_splits + '3-fold_cv_acc_2.txt', sep="\t", header=None).values.flatten())
-        test_audio_takes=test_annotation
+        test_audio_takes=test_annotation.copy()
         for f in range(len(train_annotation)):
             train_annotation[f] = train_annotation[f] + '.txt'
         for f in range(len(test_annotation)):
-            test_annotation[f] = test_annotation[f] + '.txt'
-        for f in range(len(test_audio_takes)):
             test_audio_takes[f] = test_audio_takes[f] + file_ex
+            test_annotation[f] = test_annotation[f] + '.txt'
+
 
     else:
         annotation = [f for f in os.listdir(annotation_folder) if not f.startswith('.')]
@@ -512,11 +516,12 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
         # model = vs.load_saved_model()
         model = vs.make_model()
         model = vs.restore_best_weigths(model)
-    sum = [0, 0, 0, 0]
+    sum = [1**-18, 1**-18, 1**-18, 1**-18]
     thre = np.zeros(3)
     if test_full_dataset:
         test_annotation = annotation
         test_audio_takes = audio_takes
+    empties=0 #files with no drum hits, we skip these in the tests
     for i in range(len(test_annotation)):
         audio, annotation = get_audio_and_annotation(audio_folder + test_audio_takes[i],
                                                      annotation_folder + test_annotation[i])
@@ -526,6 +531,9 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
             continue
         odf = np.squeeze(np.array(vs.predict_odf(model, list(X))), axis=-1).T
         res = score_rnn_result(odf, annotation_folder + test_annotation[i])
+        if res is None:
+            empties+=1
+            continue
         sum[0] += res[0]
         sum[1] += res[1]
         sum[2] += res[2]
@@ -537,8 +545,8 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
     print('#precision=', prec)
     print('#recall=', rec)
     print('#f-score=', fsc)
-    print('#f-score_mean=', np.mean(sum[3]) / len(test_annotation))
-    print('#optimal_thresholds=', thre / len(test_annotation))
+    print('#f-score_mean=', np.mean(sum[3]) / len(test_annotation)-empties)
+    print('#optimal_thresholds=', thre / len(test_annotation)-empties)
     #print('#precision=', sum[0] / len(test_annotation))
     #print('#recall=', sum[1] / len(test_annotation))
     #print('#f-score=', sum[2] / len(test_annotation))
@@ -568,19 +576,19 @@ def debug():
         # rec_tot = 0
         # fscore_tot = 0
 
-        prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
-                                      annotation_folder='../../libtrein/rbma_13/annotations/drums/', train=False,
-                                           test_full_dataset=True)
-        prec_tot += prec
-        rec_tot += rec
-        fscore_tot += fscore
-        break
+        #prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
+        #                              annotation_folder='../../libtrein/rbma_13/annotations/drums/', train=False,
+        #                                   test_full_dataset=True)
+        #prec_tot += prec
+        #rec_tot += rec
+        #fscore_tot += fscore
+        #break
         # prec, rec, fscore, fscore_mean, thresh  = rnn_test_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/',
         #                                    annotation_folder='../../libtrein/SMT_DRUMS/annotations/', train=False,
         #                                    test_full_dataset=False, file_ex='.wav')
         prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/midi/mp3/',
                                                         annotation_folder='../../libtrein/midi/annotations/drums_3/',
-                                                        train=True,
+                                                        train=False,
                                                         test_full_dataset=False, file_ex='.mp3',
                                                         prefab_splits='../../libtrein/midi/splits/')
         # prec, rec, fscore=rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
@@ -651,123 +659,3 @@ def debug():
 if __name__ == "__main__":
     debug()
 
-# RMBA_tuned precision= 0.5285422876382673
-# RMBA_tuned recall= 0.5327085855254259
-# RMBA_tuned f-score= 0.49552240623032934
-# RMBA midi dataset trained thresh 0.65
-# precision= 0.4790134726783235
-# recall= 0.665387192823069
-# f-score= 0.5162506399359752
-
-
-# precision= 0.5497458124657603 thresh 0.75
-# recall= 0.6725844112342692
-# f-score= 0.5698179670657172
-
-# precision= 0.5695308381880412 thresh 0.8
-# recall= 0.6435227367923977
-# f-score= 0.567005908607843
-
-# precision= 0.5122401277423047 thresh 0.7
-# recall= 0.7627213129810007
-# f-score= 0.5837722931159965
-
-# precision= 0.5891161901466501
-# recall= 0.685746836954462
-# f-score= 0.5934425197097162
-# f-score_mean= 0.49310021327373976
-
-# precision= 0.6237923381707348
-# recall= 0.6126235409921008
-# f-score= 0.5732806725233823
-# f-score_mean= 0.4811008356349879
-
-# precision= 0.8611011368926976
-# recall= 0.8547345567812396
-# f-score= 0.8431150091355888
-
-# rbma(diff)thresh=0.35
-# precision= 0.6915193363731799
-# recall= 0.6657629190633345
-# f-score= 0.6270472792058238
-# f-score_mean= 0.48789800010084167
-# full run unknown thresh
-# precision= 0.7295411699234925
-# recall= 0.5949262577456897
-# f-score= 0.6034105015639512
-# Run time: 8001.366633176804
-
-# 100seq rbma(midi_diff)
-# Untuned thresh
-# precision= 0.5120496139684696
-# recall= 0.7536472851453198
-# f-score= 0.5203449972192418
-# opt thresh
-# precision= 0.7165118681510674
-# recall= 0.6849858349956045
-# f-score= 0.6619000244715111
-# f-score_mean= 0.5113805561760257
-
-#Optimizing run full rbma
-#precision= 0.5199963532486477
-#recall= 0.702277857582598
-#f-score= 0.5975450053255574
-#f-score_mean= 0.560082360091868
-#optimal_thresholds= [0.48148148 0.57407407 0.37037037]
-#precision= 0.4763739085772984
-#recall= 0.6090703878514262
-#f-score= 0.5346110200479133
-#f-score_mean= 0.4818942010890897
-
-#opt small
-#0.04728 slowly...
-#precision= 0.5044124758220503
-#recall= 0.6849989739380259
-#f-score= 0.5809966407324247
-#f-score_mean= 0.5355841739381386
-#optimal_thresholds= [0.45925926 0.52592593 0.4       ]
-#Ei tarpeeks hyvä
-
-
-#with optimals:
-#precision= 0.5190456770358417
-#recall= 0.7723676614451149
-#f-score= 0.6109569257345503
-#f-score_mean= 0.4787483911734634
-#recalc mean/sum<-sota atm.
-#precision= 0.5199963532486477<-sota atm.
-#recall= 0.702277857582598<-sota atm.
-#f-score= 0.5975450053255574<-sota atm.
-#f-score_mean= 0.560082360091868<-sota atm.
-#optimal_thresholds= [0.48148148 0.56296296 0.36296296] <-sota atm.
-
-#koko setti:
-#precision= 0.5474845176266787
-#recall= 0.5657308673400766
-#f-score= 0.5209616649717467
-#f-score_mean= 0.461631309330918
-#1361s.
-#precision= 0.5693574958813838
-#recall= 0.6997367888236485
-#f-score= 0.6278499409573985
-#f-score_mean= 0.4856135522897564
-
-#opt rbma bin_cross 0.9~~
-#precision= 0.5181545092405146
-#recall= 0.651303098707162
-#f-score= 0.5771489880162208
-#f-score_mean= 0.5297449423768857
-#optimal_thresholds= [0.23703704 0.2037037  0.16296296] <- alemmat thresholdit!
-#Run time: 1555.2358839511871
-
-#2nd runs with strat:
-#precision= 0.4758939636671402
-#recall= 0.6461727888364457
-#f-score= 0.5481130761732349
-#f-score_mean= 0.5150106309293039
-#optimal_thresholds= [0.34074074 0.58888889 0.26296296]
-#precision= 0.43246801116318256
-#recall= 0.6741637594910732
-#f-score= 0.5269219048230067
-#f-score_mean= 0.49083054770234785
-#optimal_thresholds= [0.46296296 0.71111111 0.37777778]
