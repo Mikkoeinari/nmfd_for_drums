@@ -5,12 +5,12 @@ import os
 import pickle
 import time
 
-import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.io import wavfile
 
 import python.wide_crnn as vs
 from python.utils import *
+import matplotlib.pyplot as plt
 
 
 def loadKit(drumkit_path):
@@ -303,28 +303,49 @@ def score_rnn_result(odf, annotation_file):
         print('no drum hits present')
         return None
     tp, fp, fn, fsc_mean = 0, 0, 0, 0
-    thresholds = [0., 0., 0.]
-    #thresholds=[0.48148148, 0.57407407, 0.37037037]
-    good_thresh = np.array(thresholds)
-    drumwise_fscore = np.zeros((3))
+    thresholds = [0.50222222, 0.47333333, 0.1,        0.03333333 ,0.12222222, 0.15111111,
+                  0.14888889, 0.35333333 ,0.09111111 ,0.16888889 ,0.09777778, 0.08666667,
+                  0.00666667 ,0.32888889 ,0.1 ,       0.03111111, 0.01111111 ,0.]
+    #thresholds=[0.59534884, 0.56511628, 0.36976744]
+    good_thresh = np.zeros((odf.shape[1]))
+    drumwise_fscore = np.zeros((odf.shape[1]))
+    #vogl_to_mine = {0: 0, #bd
+    #                1: 1, #sn
+    #                2: -1,
+    #                3: -1,
+    #                4: 5, #ft
+    #                5: -1,
+    #                6: 4, #tt
+    #                7: 2, #hh
+    #                8: 8, #hhpedal
+    #                9: 3, ##hhopen
+    #                10: -1,
+    #                11: 6, #rd
+    #                12: -1,
+    #                13: 7, #cr
+    #                14: -1,
+    #                15: -1,
+    #                16: -1,
+    #                17: -1,
+    #                -1: -1}
     for i in range(odf.shape[1]):
         drum_scores = [0, 0, 0]
         max_fsc=0.
-        for l in range(10):
-            threshold = 0. + l / 10.
-        #threshold=thresholds[i]
-            drum_odf = odf[:, i]
-            peaks = onset_detection.pick_onsets(drum_odf, threshold=threshold, w=3.5)
-            predHits = frame_to_time(peaks)
-            actHits = hits[hits[1] == i]
-            actHits = actHits.iloc[:, 0]
-            true_positive = k_in_n(actHits.values, predHits, window=0.02)
-            prec, rec, f_drum = f_score(true_positive, predHits.shape[0], actHits.shape[0])
+        #for l in range(10):
+        #    threshold = 0. + l / 10.
+        threshold=thresholds[i]
+        drum_odf = odf[:, i]/max(odf[:, i])
+        peaks = onset_detection.pick_onsets(drum_odf, threshold=threshold, w=3.5)
+        predHits = frame_to_time(peaks)
+        actHits = hits[hits[1] == i]#vogl_to_mine.get(i)]
+        actHits = actHits.iloc[:, 0]
+        true_positive = k_in_n(actHits.values, predHits, window=0.02)
+        prec, rec, f_drum = f_score(true_positive, predHits.shape[0], actHits.shape[0])
 
-            if f_drum > max_fsc:
-                max_fsc = f_drum
-                good_thresh[i] = threshold
-                drum_scores = [true_positive, predHits.shape[0] - true_positive, actHits.shape[0] - true_positive]
+        if f_drum > max_fsc:
+            max_fsc = f_drum
+            good_thresh[i] = threshold
+            drum_scores = [true_positive, predHits.shape[0] - true_positive, actHits.shape[0] - true_positive]
 
         tp += drum_scores[0]
         fp += drum_scores[1]
@@ -411,14 +432,15 @@ def rnn_test(audio_file_path, annot_file_path):
     # pickle.dump(odf,open("{}/pickled.odf".format('.'), 'wb'))
     score_rnn_result(odf, annot_file_path)
     print('time:', time.time() - t0)
-    plt.figure(figsize=(6, 10))
-    plt.subplot(311)
-    plt.plot(odf[:, 0])
-    plt.subplot(312)
-    plt.plot(odf[:, 1])
-    plt.subplot(313)
-    plt.plot(odf[:, 2])
-    plt.show()
+    #for i in range(odf.shape[1]):
+    #    plt.figure(figsize=(6, 10))
+    #plt.subplot(311)
+    #    plt.plot(odf[:, i])
+    #plt.subplot(312)
+    #plt.plot(odf[:, 1])
+    #plt.subplot(313)
+    #plt.plot(odf[:, 2])
+    #    plt.show()
 
 
 def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_dataset=False,
@@ -517,11 +539,21 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
         model = vs.make_model()
         model = vs.restore_best_weigths(model)
     sum = [1**-18, 1**-18, 1**-18, 1**-18]
-    thre = np.zeros(3)
+    thre = np.zeros(18)
     if test_full_dataset:
         test_annotation = annotation
         test_audio_takes = audio_takes
-    empties=0 #files with no drum hits, we skip these in the tests
+
+
+    # if midi dataset create a smaller sample to reduce testing time 0.5% of the full material
+    if file_ex=='.mp3':
+        from sklearn.utils import resample
+        test_audio_takes, test_annotation= resample(test_audio_takes,
+                                                    test_annotation,
+                                               n_samples=int(len(test_audio_takes)*.0166666666),
+                                               replace=False,random_state=0)
+
+    empties = 0  # files with no drum hits, we skip these in the tests
     for i in range(len(test_annotation)):
         audio, annotation = get_audio_and_annotation(audio_folder + test_audio_takes[i],
                                                      annotation_folder + test_annotation[i])
@@ -545,8 +577,8 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
     print('#precision=', prec)
     print('#recall=', rec)
     print('#f-score=', fsc)
-    print('#f-score_mean=', np.mean(sum[3]) / len(test_annotation)-empties)
-    print('#optimal_thresholds=', thre / len(test_annotation)-empties)
+    print('#f-score_mean=', np.mean(sum[3]) / (len(test_annotation)-empties))
+    print('#optimal_thresholds=', thre / (len(test_annotation)-empties))
     #print('#precision=', sum[0] / len(test_annotation))
     #print('#recall=', sum[1] / len(test_annotation))
     #print('#f-score=', sum[2] / len(test_annotation))
@@ -564,6 +596,8 @@ def debug():
     fscore_tot = 0
     rounds = 1
     t0 = time.time()
+    #rnn_test('../../libtrein/trainSamplet/drumBeatAnnod.wav','../../libtrein/trainSamplet/midiBeatAnnod.csv')
+    #return
     for i in range(rounds):
         # rnn_test('../../libtrein/rbma_13/audio/RBMA-13-Track-01.wav','../../libtrein/rbma_13/annotations/drums/RBMA-13-Track-01.txt')
         # prec, rec, fscore, fscore_sum, thresh  = rnn_test_folder(audio_folder='../../libtrein/ENST_Drums/audio_drums/',
@@ -587,7 +621,7 @@ def debug():
         #                                    annotation_folder='../../libtrein/SMT_DRUMS/annotations/', train=False,
         #                                    test_full_dataset=False, file_ex='.wav')
         prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/midi/mp3/',
-                                                        annotation_folder='../../libtrein/midi/annotations/drums_3/',
+                                                        annotation_folder='../../libtrein/midi/annotations/drums_l/',
                                                         train=False,
                                                         test_full_dataset=False, file_ex='.mp3',
                                                         prefab_splits='../../libtrein/midi/splits/')

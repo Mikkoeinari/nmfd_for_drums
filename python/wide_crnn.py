@@ -14,10 +14,10 @@ from sklearn.utils import resample
 from python.MGU import MGU
 from python.utils import stft, time_to_frame
 
-seqLen = 100
+seqLen = 15
 stft_bands = 96
-kit_size = 3
-nr = 'gen32midi_diff(s100)_2nd'
+kit_size = 18
+nr = 'gen32midi_diff(s100)_18kit_b'
 
 
 def get_sequences(spectrogram=None, framed_annotation=None, shuffle_sequences=False, n_samples=0):
@@ -99,7 +99,7 @@ def make_model(model_type='many2many'):
             rs1 = Reshape((1, seqLen, 1))(in1)
             # conv layers
 
-            rs1 = TimeDistributed(Conv1D(32, 3, activation='relu'))(rs1)
+            rs1 = TimeDistributed(Conv1D(3, 3, activation='relu'))(rs1)
             #rs1 = TimeDistributed(Conv1D(32, 3, activation='relu'))(rs1)
 
             #rs1 = TimeDistributed(SpatialDropout1D(.33))(rs1)
@@ -112,7 +112,7 @@ def make_model(model_type='many2many'):
             return [in1, mgu1]
 
         def get_out_layer(in_layer):
-            in_layer = Dense(dense_layer_size, activation='relu')(in_layer)
+            #in_layer = Dense(dense_layer_size, activation='relu')(in_layer)
             #in_layer =Dropout(.5)(in_layer)
             dense2 = Dense(1, kernel_initializer='he_normal', activation='sigmoid')(in_layer)
 
@@ -262,10 +262,10 @@ def train_model(model, data=(None, None), generators=None):
     modelsaver = ModelCheckpoint(filepath="{}weights__{}.hdf5".format('test', nr), verbose=1,
                                  save_best_only=True)
     earlystopper = EarlyStopping(monitor="val_loss", min_delta=0.0, patience=5, mode='auto')
-    model.load_weights("{}weights__{}.hdf5".format('test', 'gen32midi_diff(s100)'))
+    #model.load_weights("{}weights__{}.hdf5".format('test', 'gen32midi_diff(s100)'))
     if generators[0] is not None:
         epoch_steps = 256
-        val_steps = 128
+        val_steps = 64
         model.fit_generator(generator=generators[0], epochs=1000,
                             steps_per_epoch=epoch_steps, validation_steps=val_steps,
                             callbacks=[modelsaver, earlystopper],
