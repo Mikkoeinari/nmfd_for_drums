@@ -14,10 +14,10 @@ from sklearn.utils import resample
 from python.MGU import MGU
 from python.utils import stft, time_to_frame
 
-seqLen = 15
+seqLen = 100
 stft_bands = 96
 kit_size = 18
-nr = 'gen32midi_diff(s100)_18kit_b'
+nr = 'gen32midi_diff(s100_no_cnn)_18kit_32gru'
 
 
 def get_sequences(spectrogram=None, framed_annotation=None, shuffle_sequences=False, n_samples=0):
@@ -38,7 +38,7 @@ def get_sequences(spectrogram=None, framed_annotation=None, shuffle_sequences=Fa
     else:
         return None, None #if audio file can not be loaded, skip it.
     # split spectrogram into sequences
-    for start in range(spectrogram_padded.shape[0] - seqLen):
+    for start in range(0,spectrogram_padded.shape[0] - seqLen):
         sequences.append(spectrogram_padded[start:start + seqLen, :])
         targets.append(list(target))
 
@@ -91,25 +91,28 @@ def biased_bin_cross_loss(alpha=.8):
 
 def make_model(model_type='many2many'):
     if model_type == 'many2many':
-        layer_size = 32
+        layer_size = 100
         dense_layer_size = 32
 
         def get_drum_layer(seqLen):
             in1 = Input(shape=(seqLen,))
-            rs1 = Reshape((1, seqLen, 1))(in1)
+            rs1 = Reshape((1, seqLen))(in1)
             # conv layers
 
-            rs1 = TimeDistributed(Conv1D(3, 3, activation='relu'))(rs1)
+            #rs1 = TimeDistributed(Conv1D(32, 3, activation='relu'))(rs1)
             #rs1 = TimeDistributed(Conv1D(32, 3, activation='relu'))(rs1)
 
             #rs1 = TimeDistributed(SpatialDropout1D(.33))(rs1)
-            # rs1 = TimeDistributed(BatchNormalization())(rs1)
+            #rs1 = TimeDistributed(BatchNormalization())(rs1)
 
-            rs1 = TimeDistributed(Flatten())(rs1)
+            #rs1 = TimeDistributed(Flatten())(rs1)
+            #rs1 = Flatten()(rs1)
             # recurrent layer
-            mgu1 = (MGU(layer_size, activation='tanh',
+            #mgu1 = (GRU(layer_size, activation='tanh',
+            #            return_sequences=True, dropout=0.33, recurrent_dropout=0.33, implementation=1))(rs1)
+            mgu1 = (GRU(layer_size, activation='tanh',
                         return_sequences=False, dropout=0.33, recurrent_dropout=0.33, implementation=1))(rs1)
-            return [in1, mgu1]
+            return [in1,mgu1]
 
         def get_out_layer(in_layer):
             #in_layer = Dense(dense_layer_size, activation='relu')(in_layer)
@@ -132,7 +135,7 @@ def make_model(model_type='many2many'):
         model = Model(list(in_layers[:, 0]), list(out_layers[:, 1]))
 
         print(model.summary())
-        optr = adam(lr=0.0005)
+        optr = adam(lr=0.001)
         model.compile(loss=biased_bin_cross_loss(), metrics=['accuracy'], optimizer=optr)
         return model
 
@@ -236,7 +239,7 @@ class DataGenerator(object):
 
 def make_generators(audio_takes, annotation):
     train_audios, val_audios, train_annotations, val_annotations = train_test_split(audio_takes,
-                                                                                    annotation, test_size=0.15,
+                                                                                    annotation, test_size=0.01,
                                                                                     random_state=0)
     train_generator = DataGenerator(batch_size=32,
                                     shuffle_sequences=True,
@@ -261,15 +264,16 @@ def train_model(model, data=(None, None), generators=None):
     lr_schedule = LearningRateScheduler(step_decay)
     modelsaver = ModelCheckpoint(filepath="{}weights__{}.hdf5".format('test', nr), verbose=1,
                                  save_best_only=True)
-    earlystopper = EarlyStopping(monitor="val_loss", min_delta=0.0, patience=5, mode='auto')
+    earlystopper = EarlyStopping(monitor="val_loss", min_delta=0.0, patience=10, mode='auto')
     #model.load_weights("{}weights__{}.hdf5".format('test', 'gen32midi_diff(s100)'))
     if generators[0] is not None:
-        epoch_steps = 256
-        val_steps = 64
+        epoch_steps = 8
+        val_steps = 8
         model.fit_generator(generator=generators[0], epochs=1000,
                             steps_per_epoch=epoch_steps, validation_steps=val_steps,
                             callbacks=[modelsaver, earlystopper],
                             validation_data=generators[1],
+                            max_queue_size=epoch_steps,
                             verbose=1)
     else:
         X, y = data

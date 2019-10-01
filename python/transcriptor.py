@@ -11,6 +11,7 @@ from scipy.io import wavfile
 import python.wide_crnn as vs
 from python.utils import *
 import matplotlib.pyplot as plt
+from madmom.evaluation.onsets import OnsetEvaluation, OnsetMeanEvaluation, OnsetSumEvaluation
 
 
 def loadKit(drumkit_path):
@@ -297,18 +298,24 @@ def test_run(file_path=None, annotated=False, files=[None, None], method='NMFD',
 
 
 def score_rnn_result(odf, annotation_file):
+
     try:
         hits = pd.read_csv(annotation_file, sep="\t", header=None)
     except:
         print('no drum hits present')
         return None
     tp, fp, fn, fsc_mean = 0, 0, 0, 0
-    thresholds = [0.50222222, 0.47333333, 0.1,        0.03333333 ,0.12222222, 0.15111111,
-                  0.14888889, 0.35333333 ,0.09111111 ,0.16888889 ,0.09777778, 0.08666667,
-                  0.00666667 ,0.32888889 ,0.1 ,       0.03111111, 0.01111111 ,0.]
+    thresholds=list(np.zeros(18))
+    #thresholds = [0.50222222, 0.47333333, 0.1,        0.03333333 ,0.12222222, 0.15111111,
+    #              0.14888889, 0.35333333 ,0.09111111 ,0.16888889 ,0.09777778, 0.08666667,
+    #              0.00666667 ,0.32888889 ,0.1 ,       0.03111111, 0.01111111 ,0.]
     #thresholds=[0.59534884, 0.56511628, 0.36976744]
+    #thresholds = [0.24666667, 0.43333333, 0.17777778, 0.07333333, 0.24,       0.28222222,
+    #              0.24888889, 0.18222222, 0.04444444, 0.24888889, 0.11111111, 0.08,
+    #              0.03111111, 0.33555556, 0.08222222, 0.03555556, 0.02,       0.01]
     good_thresh = np.zeros((odf.shape[1]))
     drumwise_fscore = np.zeros((odf.shape[1]))
+    mad_score=[]
     #vogl_to_mine = {0: 0, #bd
     #                1: 1, #sn
     #                2: -1,
@@ -329,29 +336,33 @@ def score_rnn_result(odf, annotation_file):
     #                17: -1,
     #                -1: -1}
     for i in range(odf.shape[1]):
+        ons=([],[])
         drum_scores = [0, 0, 0]
         max_fsc=0.
-        #for l in range(10):
-        #    threshold = 0. + l / 10.
-        threshold=thresholds[i]
-        drum_odf = odf[:, i]/max(odf[:, i])
-        peaks = onset_detection.pick_onsets(drum_odf, threshold=threshold, w=3.5)
-        predHits = frame_to_time(peaks)
-        actHits = hits[hits[1] == i]#vogl_to_mine.get(i)]
-        actHits = actHits.iloc[:, 0]
-        true_positive = k_in_n(actHits.values, predHits, window=0.02)
-        prec, rec, f_drum = f_score(true_positive, predHits.shape[0], actHits.shape[0])
+        for l in range(10):
+            threshold = 0. + l / 10.
+        #threshold=thresholds[i]
+            drum_odf = odf[:, i]/max(odf[:, i])
+            peaks = onset_detection.pick_onsets(drum_odf, threshold=threshold, w=3.5)
+            predHits = frame_to_time(peaks)
+            actHits = hits[hits[1] == i]#vogl_to_mine.get(i)]
+            actHits = actHits.iloc[:, 0]
 
-        if f_drum > max_fsc:
-            max_fsc = f_drum
-            good_thresh[i] = threshold
-            drum_scores = [true_positive, predHits.shape[0] - true_positive, actHits.shape[0] - true_positive]
+            true_positive = k_in_n(actHits.values, predHits, window=0.02)
+            prec, rec, f_drum = f_score(true_positive, predHits.shape[0], actHits.shape[0])
 
-        tp += drum_scores[0]
-        fp += drum_scores[1]
-        fn += drum_scores[2]
-        drumwise_fscore[i]=max_fsc
-        print(i,drum_scores, max_fsc, good_thresh[i])
+            if f_drum > max_fsc:
+                max_fsc = f_drum
+                good_thresh[i] = threshold
+                drum_scores = [true_positive, predHits.shape[0] - true_positive, actHits.shape[0] - true_positive]
+                ons=(predHits,actHits)
+
+            tp += drum_scores[0]
+            fp += drum_scores[1]
+            fn += drum_scores[2]
+            drumwise_fscore[i]=max_fsc
+            mad_score.append(OnsetEvaluation(ons[0],ons[1],0.2))
+            print(i,drum_scores, max_fsc, good_thresh[i])
     try:
         prec = tp / (tp + fp)
         rec = tp / (tp + fn)
@@ -362,13 +373,15 @@ def score_rnn_result(odf, annotation_file):
             return [1.,1.,1.,drumwise_fscore,good_thresh]
         else:
             return [0,0,0,0, good_thresh]
-    fscm = np.mean(drumwise_fscore)
+    fssum=OnsetSumEvaluation(mad_score).fmeasure
+    fsmean = OnsetMeanEvaluation(mad_score).fmeasure
     print('Precision: {}'.format(prec))
     print('Recall: {}'.format(rec))
-    print('F-score sum: {}'.format(fsc))
-    print('F-score mean: {}'.format(fscm))
+    print('F-score sum: {}'.format(fssum))
+    print('F-score mean: {}'.format(fsmean))
     print('Opt_thresh:', good_thresh)
-    return [tp, fp, fn, drumwise_fscore, good_thresh]
+    #print(OnsetSumEvaluation(mad_score), OnsetMeanEvaluation(mad_score))
+    return [tp, fp, fn, fssum, fsmean, good_thresh]
 
 
 from madmom.io.audio import load_audio_file  # to use mp3 in midi dataset
@@ -538,7 +551,7 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
         # model = vs.load_saved_model()
         model = vs.make_model()
         model = vs.restore_best_weigths(model)
-    sum = [1**-18, 1**-18, 1**-18, 1**-18]
+    sum = [1**-18, 1**-18, 1**-18, 1**-18, 1**-18]
     thre = np.zeros(18)
     if test_full_dataset:
         test_annotation = annotation
@@ -566,25 +579,27 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
         if res is None:
             empties+=1
             continue
-        sum[0] += res[0]
-        sum[1] += res[1]
-        sum[2] += res[2]
-        sum[3] += res[3]
-        thre=thre+res[4]
+        sum[0] += res[0] #tp
+        sum[1] += res[1] #fp
+        sum[2] += res[2] #fn
+        sum[3] += res[3] #fscore(sum)
+        sum[4] += res[4] #fcsore(mean)
+        thre=thre+res[5] #opt thresholds
     prec = sum[0] / (sum[0] + sum[1])
     rec = sum[0] / (sum[0] + sum[2])
     fsc = 2 * sum[0] / (2 * sum[0] + sum[1] + sum[2])
     print('#precision=', prec)
     print('#recall=', rec)
     print('#f-score=', fsc)
-    print('#f-score_mean=', np.mean(sum[3]) / (len(test_annotation)-empties))
+    print('#f-score_mean=', np.mean(sum[4]) / len(test_annotation))
     print('#optimal_thresholds=', thre / (len(test_annotation)-empties))
+    return prec, rec, fsc, np.mean(sum[4]) / len(test_annotation), thre / len(test_annotation)
+    #return 0,0,0,0,0 #dummies...
     #print('#precision=', sum[0] / len(test_annotation))
     #print('#recall=', sum[1] / len(test_annotation))
     #print('#f-score=', sum[2] / len(test_annotation))
     #print('#f-score_mean=', sum[3] / len(test_annotation))
     #print('#optimal_thresholds=', thre / len(test_annotation))
-    return prec, rec, fsc, np.mean(sum[3]) / len(test_annotation), thre / len(test_annotation)
     #return sum[0] / len(test_annotation), sum[1] / len(test_annotation), sum[2] / len(test_annotation), sum[3] / len(
     #    test_annotation), thre / len(test_annotation)
 
@@ -622,7 +637,7 @@ def debug():
         #                                    test_full_dataset=False, file_ex='.wav')
         prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/midi/mp3/',
                                                         annotation_folder='../../libtrein/midi/annotations/drums_l/',
-                                                        train=False,
+                                                        train=True,
                                                         test_full_dataset=False, file_ex='.mp3',
                                                         prefab_splits='../../libtrein/midi/splits/')
         # prec, rec, fscore=rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
