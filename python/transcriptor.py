@@ -4,14 +4,74 @@ This module handles the main logic of the game
 import os
 import pickle
 import time
-
+import re
 import pandas as pd
 from scipy.io import wavfile
-
+import pydub
+from pydub import effects
 import python.wide_crnn as vs
 from python.utils import *
 import matplotlib.pyplot as plt
 from madmom.evaluation.onsets import OnsetEvaluation, OnsetMeanEvaluation, OnsetSumEvaluation
+
+def initKitBG(drumkit_path, K=1, L=10, drumwise=True, method='NMFD'):
+    """
+    Initialize drumkit from completed soundcheck audio. Finds prior templates for source separation,
+    recalculates thresholds for peak picking, saves information to drum objects
+    and stores the drumkit as a pickled file.
+    :param drumkit_path: Folder containing soundcheck audio
+    :param K: int, max number prior templates per drum
+    :param L: int, number of signal frames to use in templates
+    :param drumwise: Boolean, perform drumwise peak picking threshold recalculation
+    or use same threshold for all drums
+    :param method: 'NMFD' or 'NMF', the source separation approach to use
+    :return: None
+    """
+    global drumkit
+    drumkit=[]
+    #read drums from folder
+    kit = [f for f in os.listdir(drumkit_path) if not f.startswith('.')]
+    kit.sort()
+    filt_spec_all=None
+    print(kit)
+    for i in range(len(kit)):
+        # HACK!!! remove when you have the time!!!
+        if (kit[i]=='pickledDrumkit.drm'): continue
+        drum_name=kit[i].split('_')[1].split('.')[0]
+        drum_id=name_to_index(drum_name)
+        print('soundcheck:',drum_name, drum_id)
+        #read file
+        audio_segment = pydub.AudioSegment.from_mp3("{}/{}".format(drumkit_path, kit[i]))
+        buffer = np.array(audio_segment.get_array_of_samples())
+        #preprocess
+        filt_spec = stft(buffer)
+        #find onsets
+        peaks = getPeaksFromBuffer(filt_spec, N_PEAKS)
+        if(peaks.shape[0]<N_PEAKS):
+            raise Exception('drum nr. {} does not have the correct number of peaks, please re check'.format(i))
+        # mean of cluster center
+        freqtemps = findDefBins(peaks, filt_spec, L)
+
+        # Store the start locations of different drums and concatenate soundcheck file
+        if filt_spec_all is None:
+            filt_spec_all = filt_spec[:peaks[-1]+300,:]
+            shifts = [0]
+        else:
+            shift = filt_spec_all.shape[0]
+            filt_spec_all = np.vstack((filt_spec_all, filt_spec[:peaks[-1]+300,:]))
+            shifts.append(shift)
+        # put drums in a list of drums
+        drumkit.append(
+            Drum(name=[drum_id], peaks=peaks, heads=freqtemps[0], tails=freqtemps[1],
+                 threshold=0,
+                 midinote=None))
+    print('recalculating thresholds')
+    # recalculate all threshods for peak picking
+    recalculate_thresholds(filt_spec_all, shifts, drumkit, drumwise=True, method=method)
+
+    # Pickle the important data
+    pickle.dump(drumkit, open("{}/pickledDrumkit.drm".format(drumkit_path), 'wb'))
+
 
 
 def loadKit(drumkit_path):
@@ -194,16 +254,13 @@ def extract_training_material(audio_folder, annotation_folder, train_audio_takes
     print('\ntotal: ', len(kick_heads), len(snare_tails), len(hihat_heads))
 
 
-def make_drumkit():
-    pass
-
-
-def run_folder(audio_folder, annotation_folder):
+def run_folder(audio_folder, annotation_folder, soundcheck_folder=None, method='NMFD'):
     audio = [f for f in os.listdir(audio_folder) if not f.startswith('.')]
     annotation = [f for f in os.listdir(annotation_folder) if not f.startswith('.')]
     # annotation = [f for f in annotation if not f.endswith('train.wav')]
     take_names = set([i.split(".")[0] for i in annotation])
     audio_takes = np.array(sorted([i + '.wav' for i in take_names]))
+    audio_takes=np.array(sorted(audio))
     annotation = np.array(sorted(annotation))
     # np.random.seed(0)
     train_ind = np.random.choice(len(annotation), int(len(annotation) / 3))
@@ -213,13 +270,16 @@ def run_folder(audio_folder, annotation_folder):
     test_audio_takes = audio_takes  # [mask]
     train_annotation = annotation  # [~mask]
     test_annotation = annotation  # [mask]
-    extract_training_material(audio_folder, annotation_folder, train_audio_takes, train_annotation)
-    loadKit('.')
+    if soundcheck_folder is not None:
+        initKitBG(soundcheck_folder,K=1, L=10,drumwise=True, method=method)
+    elif soundcheck_folder is None:
+        extract_training_material(audio_folder, annotation_folder, train_audio_takes, train_annotation)
+    loadKit(soundcheck_folder)
     sum = [0, 0, 0]
     for i in range(len(test_annotation)):
         res = test_run(annotated=True,
                        files=[audio_folder + test_audio_takes[i], annotation_folder + test_annotation[i]],
-                       method='NMFD')
+                       method=method)
         sum[0] += res[0]
         sum[1] += res[1]
         sum[2] += res[2]
@@ -244,7 +304,10 @@ def test_run(file_path=None, annotated=False, files=[None, None], method='NMFD',
     try:
         # buffer = madmom.audio.Signal(audio_file_path, frame_size=FRAME_SIZE,
         #                             hop_size=HOP_SIZE)
-        sr, buffer = wavfile.read(audio_file_path, mmap=True)
+        #sr, buffer = wavfile.read(audio_file_path, mmap=True)
+        audio_segment = pydub.AudioSegment.from_mp3(audio_file_path)
+        # audio_segment=effects.normalize(audio_segment)
+        buffer = np.array(audio_segment.get_array_of_samples())
         # print(buffer.shape)
         if len(buffer.shape) > 1:
             buffer = buffer[:, 0] + buffer[:, 1]
@@ -261,6 +324,7 @@ def test_run(file_path=None, annotated=False, files=[None, None], method='NMFD',
         # t0 = time.time()
         plst, i = process_drum_data(liveBuffer=buffer[skip_secs:],
                                     drumkit=drumkit, iters=75, method=method)
+
         # print('\nNMFDtime:%0.2f' % (time.time() - t0))
         # Print scores if annotated
         for k in range(1):
@@ -268,14 +332,16 @@ def test_run(file_path=None, annotated=False, files=[None, None], method='NMFD',
                 # print f-score:
                 # print('\n\n')
                 hits = pd.read_csv(annot_file_path, sep="\t", header=None)
+                hits.ix[:,1]=to_index(hits.ix[:,1])
                 precision, recall, fscore, true_tot = 0, 0, 0, 0
                 for i in plst:
+                    print('drum:', index_to_name(i.get_name()[0]))
                     predHits = frame_to_time(i.get_hits())
                     # NMF need this coefficient to correct estimates
-                    b = -0.002  # -.02615#02625#02625#025#01615#SMT -0.002 for NMFD!
+                    b =0# -0.002  # -.02615#02625#02625#025#01615#SMT -0.002 for NMFD!
                     actHits = hits[hits[1] == i.get_name()[0]]
                     actHits = actHits.iloc[:, 0]
-                    trueHits = k_in_n(actHits.values + b, predHits, window=0.025)
+                    trueHits = k_in_n(actHits.values + b, predHits, window=0.02)
                     prec, rec, f_drum = f_score(trueHits, predHits.shape[0], actHits.shape[0])
                     # Multiply by n. of hits to get real f-score in the end.
                     precision += prec * actHits.shape[0]
@@ -606,53 +672,53 @@ def rnn_test_folder(audio_folder, annotation_folder, train=True, test_full_datas
 
 def debug():
     # rnn_train(audio_folder='../../libtrein/ENST_Drums/audio_drums/', annotation_folder='../../libtrein/ENST_Drums/annotation/')
-    prec_tot = 0
-    rec_tot = 0
-    fscore_tot = 0
-    rounds = 1
-    t0 = time.time()
-    #rnn_test('../../libtrein/trainSamplet/drumBeatAnnod.wav','../../libtrein/trainSamplet/midiBeatAnnod.csv')
-    #return
-    for i in range(rounds):
-        # rnn_test('../../libtrein/rbma_13/audio/RBMA-13-Track-01.wav','../../libtrein/rbma_13/annotations/drums/RBMA-13-Track-01.txt')
-        # prec, rec, fscore, fscore_sum, thresh  = rnn_test_folder(audio_folder='../../libtrein/ENST_Drums/audio_drums/',
-        #                                    annotation_folder='../../libtrein/ENST_Drums/annotation/', train=False,
-        #                                    test_full_dataset=True)
-        # prec_tot += prec
-        # rec_tot += rec
-        # fscore_tot += fscore
-        # prec_tot = 0
-        # rec_tot = 0
-        # fscore_tot = 0
+   ##prec_tot = 0
+   #rec_tot = 0
+   #fscore_tot = 0
+   #rounds = 1
+   #t0 = time.time()
+   ##rnn_test('../../libtrein/trainSamplet/drumBeatAnnod.wav','../../libtrein/trainSamplet/midiBeatAnnod.csv')
+   ##return
+   #for i in range(rounds):
+   #    # rnn_test('../../libtrein/rbma_13/audio/RBMA-13-Track-01.wav','../../libtrein/rbma_13/annotations/drums/RBMA-13-Track-01.txt')
+   #    # prec, rec, fscore, fscore_sum, thresh  = rnn_test_folder(audio_folder='../../libtrein/ENST_Drums/audio_drums/',
+   #    #                                    annotation_folder='../../libtrein/ENST_Drums/annotation/', train=False,
+   #    #                                    test_full_dataset=True)
+   #    # prec_tot += prec
+   #    # rec_tot += rec
+   #    # fscore_tot += fscore
+   #    # prec_tot = 0
+   #    # rec_tot = 0
+   #    # fscore_tot = 0
 
-        #prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
-        #                              annotation_folder='../../libtrein/rbma_13/annotations/drums/', train=False,
-        #                                   test_full_dataset=True)
-        #prec_tot += prec
-        #rec_tot += rec
-        #fscore_tot += fscore
-        #break
-        # prec, rec, fscore, fscore_mean, thresh  = rnn_test_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/',
-        #                                    annotation_folder='../../libtrein/SMT_DRUMS/annotations/', train=False,
-        #                                    test_full_dataset=False, file_ex='.wav')
-        prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/midi/mp3/',
-                                                        annotation_folder='../../libtrein/midi/annotations/drums_l/',
-                                                        train=True,
-                                                        test_full_dataset=False, file_ex='.mp3',
-                                                        prefab_splits='../../libtrein/midi/splits/')
-        # prec, rec, fscore=rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
-        #  annotation_folder='../../libtrein/rbma_13/annotations/drums/')
-        # prec_tot += prec
-        # rec_tot += rec
-        # fscore_tot += fscore
-    print('Total numbers for {} rounds:\n'.format(rounds))
-    print('#precision=', prec_tot / rounds)
-    print('#recall=', rec_tot / rounds)
-    print('#f-score=', fscore_tot / rounds)
-    print('#Run time:', time.time() - t0)
-    #rnn_test_('../../libtrein/ENST_Drums/audio_drums/b132_MIDI-minus-one_blues-102_sticks.wav',
-    #                                                 '../../libtrein/ENST_Drums/annotation/b132_MIDI-minus-one_blues-102_sticks.txtcsv')
-    return
+   #    #prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
+   #    #                              annotation_folder='../../libtrein/rbma_13/annotations/drums/', train=False,
+   #    #                                   test_full_dataset=True)
+   #    #prec_tot += prec
+   #    #rec_tot += rec
+   #    #fscore_tot += fscore
+   #    #break
+   #    # prec, rec, fscore, fscore_mean, thresh  = rnn_test_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/',
+   #    #                                    annotation_folder='../../libtrein/SMT_DRUMS/annotations/', train=False,
+   #    #                                    test_full_dataset=False, file_ex='.wav')
+   #    prec, rec, fscore, fscore_mean, thresh = rnn_test_folder(audio_folder='../../libtrein/midi/mp3/',
+   #                                                    annotation_folder='../../libtrein/midi/annotations/drums_l/',
+   #                                                    train=True,
+   #                                                    test_full_dataset=False, file_ex='.mp3',
+   #                                                    prefab_splits='../../libtrein/midi/splits/')
+   #    # prec, rec, fscore=rnn_test_folder(audio_folder='../../libtrein/rbma_13/audio/',
+   #    #  annotation_folder='../../libtrein/rbma_13/annotations/drums/')
+   #    # prec_tot += prec
+   #    # rec_tot += rec
+   #    # fscore_tot += fscore
+   #print('Total numbers for {} rounds:\n'.format(rounds))
+   #print('#precision=', prec_tot / rounds)
+   #print('#recall=', rec_tot / rounds)
+   #print('#f-score=', fscore_tot / rounds)
+   #print('#Run time:', time.time() - t0)
+   ##rnn_test_('../../libtrein/ENST_Drums/audio_drums/b132_MIDI-minus-one_blues-102_sticks.wav',
+   ##                                                 '../../libtrein/ENST_Drums/annotation/b132_MIDI-minus-one_blues-102_sticks.txtcsv')
+   #return
     # debug
     # initKitBG('Kits/mcd2/',8,K)
     # K = 1
@@ -676,8 +742,8 @@ def debug():
     for i in range(rounds):
         # prec, rec, fscore=run_folder(audio_folder='../../libtrein/ENST_Drums/audio_drums/', annotation_folder='../../libtrein/ENST_Drums/annotation/')
 
-        prec, rec, fscore = run_folder(audio_folder='../../libtrein/SMT_DRUMS/audio/',
-                                       annotation_folder='../../libtrein/SMT_DRUMS/annotations/')
+        prec, rec, fscore = run_folder(audio_folder='./audio/',
+                                       annotation_folder='./annotation/',soundcheck_folder='./soundcheck', method=method)
 
         # prec, rec, fscore=run_folder(audio_folder='../../libtrein/rbma_13/audio/', annotation_folder='../../libtrein/rbma_13/annotations/drums/')
 

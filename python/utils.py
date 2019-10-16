@@ -106,13 +106,77 @@ class Drum(object):
     def get_threshold(self):
         return self.threshold
     def set_ntemplates(self):
-        if self.heads and self.tails:
+        if self.heads is not None and self.tails is not None:
             self.ntemplates=self.heads.shape[2]+self.tails.shape[2]
         else:
             self.ntemplates=0
     def get_ntemplates(self):
         return self.ntemplates
 
+def findDefBins(frames=None, filteredSpec=None, ConvFrames=None, matrices=None):
+    """
+    Calculate the prior vectors for W to use in NMF by averaging the sample locations
+    :param frames: Numpy array of hit locations (frame numbers)
+    :param filteredSpec: Spectrogram, the spectrogram where the vectors are extracted from
+    :return: tuple of Numpy arrays, prior vectors Wpre,heads for actual hits and tails for decay part of the sound
+     """
+    global total_priors
+    if matrices is None:
+        gaps = np.zeros((frames.shape[0], ConvFrames))
+        for i in range(frames.shape[0]):
+            for j in range(gaps.shape[1]):
+                gaps[i, j] = frames[i] + j
+        a = np.reshape(filteredSpec[gaps.astype(int)], (N_PEAKS, -1))
+    else:
+        a = np.array(matrices[0])
+    heads = np.reshape(np.mean(a, axis=0), (FILTERBANK_SHAPE, max_n_frames, 1), order='F')
+    if matrices is None:
+        tailgaps = np.zeros((frames.shape[0], ConvFrames))
+        for i in range(frames.shape[0]):
+            for j in range(gaps.shape[1]):
+                tailgaps[i, j] = frames[i] + j + ConvFrames
+
+        a2 = np.reshape(filteredSpec[tailgaps.astype(int)], (N_PEAKS, -1))
+
+    else:
+        a2 = np.array(matrices[1])
+    tails = np.reshape(np.mean(a2, axis=0), (FILTERBANK_SHAPE, max_n_frames, 1), order='F')
+    total_priors += 2
+    return (heads, tails, 1, 1)
+
+def getPeaksFromBuffer(filt_spec, numHits):
+    """
+
+    :param filt_spec: numpy array, the filtered spectrogram containing sound checked drum audio
+
+    :param numHits: int, the number of hits to recover from filt_spec
+
+    :return: numpy array, peak locations in filt_spec
+    """
+    threshold = 1
+    searchSpeed = .1
+    # peaks=cleanDoubleStrokes(madmom.features.onsets.peak_picking(superflux_3,threshold),resolution)
+    H0=onset_detection.spectral_difference(filt_spec)
+    # peaks = cleanDoubleStrokes(pick_onsets(H0 / H0.max(), delta=threshold), resolution)
+    peaks = onset_detection.pick_onsets(H0, threshold=threshold)
+    changed = False
+    last = 0
+    while (peaks.shape != (numHits,)):
+        # Make sure we don't go over numHits
+        # There is a chance of an infinite loop here!!! Make sure that don't happen
+        if (peaks.shape[0] > numHits) or (peaks.shape[0] < last):
+            if changed == False:
+                searchSpeed = searchSpeed / 2
+            changed = True
+            threshold += searchSpeed
+        else:
+            changed = False
+            threshold -= searchSpeed
+        # peaks=cleanDoubleStrokes(madmom.features.onsets.peak_picking(superflux_3,threshold),resolution)
+        # peaks = cleanDoubleStrokes(pick_onsets(H0, delta=threshold), resolution)
+        last = peaks.shape[0]
+        peaks = onset_detection.pick_onsets(H0, threshold=threshold)
+    return peaks
 
 def create_templates_optics(frames=None, filteredSpec=None, ConvFrames=None, matrices=None):
     """
@@ -205,7 +269,27 @@ def to_midinote(notes):
     :param notes: int or list, For instance kick, snare and closed hi-hat is [0,1,2]
     :return: list of corresponfing midinotes [36, 38, 42]
     """
-    return list(MIDINOTES[i] for i in notes)
+    return list(midinote_to_index(i) for i in notes)
+
+def to_index(midinotes):
+    return list(midinote_to_index(i) for i in list(midinotes))
+
+def midinote_to_index(note):
+    try:
+        return f_to_l_map[note]
+    except KeyError as e:
+        print ('unknown note', e)
+        return None
+
+def midinote_to_name(note):
+    return names_l_map[f_to_l_map[note]]
+
+def index_to_name(index):
+    return names_l_map[index]
+
+def name_to_index(name):
+    return names_l_map.index(name)
+
 
 def get_Wpre(drumkit, max_n_frames=max_n_frames):
     total_heads = 0
@@ -231,7 +315,27 @@ def get_Wpre(drumkit, max_n_frames=max_n_frames):
             Wpre[:, ind + j, :] = tails[:, :, j]
             total_tails += 1
     return Wpre, total_heads
-
+#def get_Wpre(drumkit, max_n_frames=max_n_frames):
+#    total_heads = 0
+#    global total_priors
+#    total_priors = len(drumkit) * 2
+#    Wpre = np.zeros((FILTERBANK_SHAPE, total_priors, max_n_frames))
+#    for i in range(len(drumkit)):
+#        heads = drumkit[i].get_heads()
+#        K1 = heads.shape[2]
+#        ind = total_heads
+#        for j in range(K1):
+#            Wpre[:, ind + j, :] = heads[:, :, j]
+#            total_heads += 1
+#    total_tails = 0
+#    for i in range(len(drumkit)):
+#        tails = drumkit[i].get_tails()
+#        K2 = tails.shape[2]
+#        ind = total_heads + total_tails
+#        for j in range(K2):
+#            Wpre[:, ind + j, :] = tails[:, :, j]
+#            total_tails += 1
+#    return Wpre, total_heads
 
 def recalculate_thresholds(filt_spec, shifts, drumkit, drumwise=False, method='NMFD'):
     """
@@ -250,6 +354,7 @@ def recalculate_thresholds(filt_spec, shifts, drumkit, drumwise=False, method='N
     else:
         H, err1 = nmfd.semi_adaptive_NMFB(filt_spec.T, Wpre=Wpre, iters=128, n_heads=total_heads)
     total_heads = 0
+    print(H.shape)
     Hs = []
     for i in range(len(drumkit)):
         heads = drumkit[i].get_heads()
@@ -292,13 +397,14 @@ def recalculate_thresholds(filt_spec, shifts, drumkit, drumwise=False, method='N
             # if optimal threshold is within a range [threshold, maxd] find a sweet spot empirically,
             #  increasing alpha lowers threshold and decreases precision
             if maxd > 0:
-                alpha = 0.7
+                alpha = 0.8
                 beta = 1 - alpha
                 threshold = (alpha * threshold + beta * maxd)
 
             # arbitrary minimum threshold check
             threshold = max((threshold, 0.05))
-
+            # arbitrary maximum threshold check
+            threshold = min((threshold, 0.333))
             print('threshold: %f, f-score: %f' % (threshold, f_zero))
             drumkit[i].set_threshold(threshold)
 
@@ -377,12 +483,12 @@ def stft(audio_signal, streaming=False, hs=HOP_SIZE,
     # HOP_LENGTH spaced index
     frames_index = np.arange(0, len(audio_signal), hs)
     # +2 frames to correct NMF systematic errors... +1 for NMFD
-    err_corr = 1
+    err_corr =-1
     if streaming:
         err_corr = 0
     data = np.zeros((len(frames_index) + err_corr, n_frames), dtype=np.complex64)
     # Window
-    win = np.kaiser(fs, np.pi ** 2)
+    win = np.hanning(fs)#np.kaiser(fs, np.pi ** 2)
     # STFT
     for frame in range(len(frames_index)):
         # Get one frame length audio clip

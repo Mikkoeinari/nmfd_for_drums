@@ -18,15 +18,48 @@ DRUMKIT_PATH = '../trainSamplet/'
 DELTA = 0.15
 MIDINOTES = [36, 38, 42, 46, 44, 50, 48, 47, 43, 41, 51, 49, 57,
              55]  # BD, SN, CHH, OHH,SHH, TT,TT2,TT3, FT,FT2, RD, CR,CR2,splash, Here we need generality
-MAX_DRUMS = 14  # Maximum kit size
+MAX_DRUMS = 19 # Maximum kit size
 MAX_PAUSE = 16
 BIN_STRING_LEN=MAX_DRUMS+MAX_PAUSE
-N_PEAKS = 32 # IF CHANGED ALL PREVIOUS SOUNDCHECKS INVALIDATE!!!
+N_PEAKS = 16 # IF CHANGED ALL PREVIOUS SOUNDCHECKS INVALIDATE!!!
 FILTERBANK_SHAPE=48
 MS_IN_MIN = 60000
 SXTH_DIV = 16
 QUANTIZE = False
 ENCODE_PAUSE = True
+
+# general midi to 18-class label system From vogl http://ifs.tuwien.ac.at/~vogl/dafx2018/
+names_l_map = ['BD', 'SD', 'SS', 'CLP', 'LT', 'MT', 'HT', 'CHH', 'PHH', 'OHH', 'TB', 'RD', 'RB', 'CRC1','CRC2', 'SPC', 'CHC',
+               'CB', 'CL']
+num_l_drum_notes = len(names_l_map)
+f_to_l_map = {35: 0,  # BD
+              36: 0,  # BD
+              38: 1,  # SD
+              40: 1,  # SD
+              37: 2,  # side stick
+              39: 3,  # clap
+              41: 4,  # TT  (lft)
+              43: 4,  # (hft)
+              45: 5,  # (lt)
+              47: 5,  # (lmt)
+              48: 6,  # (hmt)
+              50: 6,  # (ht)
+              42: 7,  # HH
+              44: 8,  # pedal hh
+              46: 9,  # open hh
+              54: 10,  # tamborine
+              51: 11,  # RD
+              59: 11,  # ride 2
+              53: 12,  # ride bell
+              49: 13,  # crash
+              57: 14,  # crash2
+              55: 15,  # splash
+              52: 16,  # chinese
+              56: 17,  # cowbell
+              75: 18,  # click
+              78: 9,  # OHH
+              79: 7,  # HH dtx
+              }
 
 #Not used
 #

@@ -9,15 +9,16 @@ import pydub
 import rtmidi
 import sounddevice
 from pydub import effects
-from scipy.stats import gamma
 
-from python.onset_detection import pick_onsets
-from python.utils import stft, frame_to_time, time_to_frame, k_in_n
+from python.utils import stft, frame_to_time, time_to_frame
 
 RATE = 44100
+
 sounddevice.default.samplerate = 44100
 sounddevice.default.channels = 1
 sounddevice.default.dtype = 'int16'
+sounddevice.default.latency=0.25
+sounddevice.default.blocksize=0
 
 home = expanduser("~")
 # direct to your ffmpeg executable to use mp3 codec
@@ -27,7 +28,7 @@ global _ImRecording
 _ImRecording = False
 
 # general midi to 18-class label system From vogl http://ifs.tuwien.ac.at/~vogl/dafx2018/
-names_l_map = ['BD', 'SD', 'SS', 'CLP', 'LT', 'MT', 'HT', 'CHH', 'PHH', 'OHH', 'TB', 'RD', 'RB', 'CRC', 'SPC', 'CHC',
+names_l_map = ['BD', 'SD', 'SS', 'CLP', 'LT', 'MT', 'HT', 'CHH', 'PHH', 'OHH', 'TB', 'RD', 'RB', 'CRC1','CRC2', 'SPC', 'CHC',
                'CB', 'CL']
 num_l_drum_notes = len(names_l_map)
 f_to_l_map = {35: 0,  # BD
@@ -50,11 +51,11 @@ f_to_l_map = {35: 0,  # BD
               59: 11,  # ride 2
               53: 12,  # ride bell
               49: 13,  # crash
-              57: 13,  # crash2
-              55: 14,  # splash
-              52: 15,  # chinese
-              56: 16,  # cowbell
-              75: 17,  # click
+              57: 14,  # crash2
+              55: 15,  # splash
+              52: 16,  # chinese
+              56: 17,  # cowbell
+              75: 18,  # click
               78: 9,  # OHH
               79: 7,  # HH dtx
               }
@@ -165,18 +166,25 @@ def drumpart_listener():
                     if _ImRecording == False:
                         t = threading.Thread(target=record_part_with_midi, args=(60, data))
                         t.start()
-                        # t.join()
-                        # return data[0][0], data[0][1], False
+                        #t.join()
+                        #a, m = data[0]
+                        #return a, m, False
                 elif key == "s":
-                    if _ImRecording == True:
-                        _ImRecording = False
-                        t.join()
-                        return data[0][0], data[0][1], True
-                elif key == "q":
                     _ImRecording = False
-                    t.join()
-                    return data[0][0], data[0][1], True
-                    exit('program shutdown complete')
+                    if t is not None:
+                        t.join()
+                        a,m=data[0]
+                        return a,m, False
+                elif key == "q":
+                    if _ImRecording==False and len(data)<1:
+                        return None, None, True
+                    _ImRecording = False
+                    if t is not None:
+                        t.join()
+                        a, m = data[0]
+                        return a, m, True
+
+
 
 
 def record_part_with_midi(part_len_seconds=60, data_container=[]):
@@ -187,14 +195,17 @@ def record_part_with_midi(part_len_seconds=60, data_container=[]):
     global _ImRecording
     _ImRecording = True
     midi_result = []
-    midiin = rtmidi.MidiIn()
-    available_ports = midiin.get_ports()
+    try:
+        midiin = rtmidi.MidiIn()
+        available_ports = midiin.get_ports()
 
-    if available_ports:
-        midiin.open_port(0)
-        print(midiin.get_message())
-    else:
-        midiin.open_virtual_port("My virtual input")
+        if available_ports:
+            midiin.open_port(0)
+            print(midiin.get_message())
+        else:
+            midiin.open_virtual_port("My virtual input")
+    except:
+        return []
     print("* recording")
     try:
         audio = sounddevice.rec(part_len_seconds * RATE)
@@ -228,6 +239,7 @@ def record_part_with_midi(part_len_seconds=60, data_container=[]):
         midi_file['key'] = midi_key
         midi_file['vel'] = midi_vel
         data_container.append((audio, midi_file))
+        del midiin
         return data_container[0]
 
 
@@ -264,38 +276,39 @@ def remove_annotation_latency(audio, annotation, grain=66):
     # pick peaks from spectral difference ODF
 
     spectrogram = stft(audio)
-    diff = spectrogram
+    diff = np.log(spectrogram * 1 + 1)
     diff[1:, :] = np.diff(spectrogram, n=1, axis=0)
-    spec_diff=np.sum(diff, axis=1)
-    spec_diff=np.clip(spec_diff/max(spec_diff), 0,1)
+    spec_diff = np.sum(diff, axis=1)
+    spec_diff = np.clip(spec_diff / max(spec_diff), 0, 1)
     annotation_times = annotation.index.values
-    annotation_frames=time_to_frame(annotation_times)
+    annotation_frames = time_to_frame(annotation_times)
     annot_signal = np.zeros(spec_diff.size)
     for i in annotation_frames:
         if i < annot_signal.size:
             annot_signal[int(i) - 1] += .2
             annot_signal[int(i)] += .4
-            annot_signal[int(i)+1] += .2
+            annot_signal[int(i) + 1] += .2
         else:
-            #print(int(i))
+            pass
+            # print(int(i))
     best_modifier = 0
 
     # slide over spec diff to find optimal match, split to small segments as midi latency fluctuates over time.
-    k=15
-    n=grain
-    while k <spec_diff.size-n-30:
+    k = 15
+    n = grain
+    while k < spec_diff.size - n - 30:
         best_corr = np.inf
         for i in range(30):
-            #from [-15:15]
+            # from [-15:15]
             modifier = i - 15
-            #sum of absolute value of the similarity of the arrays
-            correlation=np.sum(np.abs(np.add(spec_diff[k:k+n],-annot_signal[k-modifier:k+n-modifier])))
+            # sum of absolute value of the similarity of the arrays
+            correlation = np.sum(np.abs(np.add(spec_diff[k:k + n], -annot_signal[k - modifier:k + n - modifier])))
             if correlation < best_corr:
                 best_corr = correlation
                 best_modifier = modifier
-        selection=(annotation_frames>k) & (annotation_frames<k+n)
-        annotation_frames[selection]=annotation_frames[selection]+best_modifier
-        k+=n
+        selection = (annotation_frames > k) & (annotation_frames < k + n)
+        annotation_frames[selection] = annotation_frames[selection] + best_modifier
+        k += n
     new_annod = pd.DataFrame(index=frame_to_time(annotation_frames), data=annotation.values)
     return new_annod
 
@@ -311,11 +324,11 @@ def parse_argv(argv):
             try:
                 kitsize = int(argv[2])
             except ValueError as e:
-                print(e + ' please use integer to specify kit size')
+                print(e , ' please use integer to specify kit size')
             try:
                 is_soundcheck = int(argv[3])
             except ValueError as e:
-                print(e + ' please use integer 1 perform soundceck')
+                print(e , ' please use integer 1 perform soundceck')
         except IndexError as e:
             pass
         finally:
@@ -332,24 +345,26 @@ if __name__ == '__main__':
         print('soundcheck done!')
 
     ####test rectification with specific file
-    audio_file_name = './audio/' + 'kakka1569863379.48289.mp3'
-    annotation_file_name = './annotation/' + 'kakka1569863379.48289.csv'
-    annod = pd.read_csv(annotation_file_name, index_col=0, header=None, sep='\t')
-    audio_segment = pydub.AudioSegment.from_mp3(audio_file_name)
-    audio = np.array(audio_segment.get_array_of_samples())
-    rect_name = './annotation/' + 'kakka_rect.csv'
-    rect_annod = remove_annotation_latency(audio, annod, grain=99)
-    rect_annod.to_csv(rect_name, index=True, header=False, sep="\t",
-                              float_format='%.3f')
-    exit('moido')
+    #audio_file_name = './audio/' + 'kakka1569863379.48289.mp3'
+    #annotation_file_name = './annotation/' + 'kakka1569863379.48289.csv'
+    #annod = pd.read_csv(annotation_file_name, index_col=0, header=None, sep='\t')
+    #audio_segment = pydub.AudioSegment.from_mp3(audio_file_name)
+    #audio = np.array(audio_segment.get_array_of_samples())
+    #rect_name = './annotation/' + 'kakka_rect.csv'
+    #rect_annod = remove_annotation_latency(audio, annod, grain=99)
+    #rect_annod.to_csv(rect_name, index=True, header=False, sep="\t",
+    #                  float_format='%.3f')
+    #exit('moido')
     exit_status = False
     while not exit_status:
         print('record drumtake, press "r" to start recording, "s" to stop and save samples, "q" to exit program')
 
         timestamp = time.time()
-        audio_file_name = './audio/' + kitname + str(timestamp) + '.mp3'
-        annotation_file_name = './annotation/' + kitname + str(timestamp) + '.csv'
+        audio_file_name = './audio/' + kitname +'_'+ str(timestamp) + '.mp3'
+        annotation_file_name = './annotation/' +'_'+ kitname + str(timestamp) + '_original.csv'
         audio, midi_transcription, exit_status = drumpart_listener()
+        if audio is None:
+            continue
         audio_segment = pydub.AudioSegment(
             audio.tobytes(),
             frame_rate=RATE,
@@ -359,8 +374,10 @@ if __name__ == '__main__':
         audio_segment = effects.normalize(audio_segment)
         audio_segment.export(audio_file_name, format='mp3')
         midi_transcription.to_csv(annotation_file_name, index=True, header=False, sep="\t")
-        rect_name = './annotation/' + kitname + str(timestamp) + '_rect_.csv'
-        for i in range(3):
-            midi_transcription=remove_annotation_latency(audio, midi_transcription)
+        rect_name = './annotation/' + kitname +'_'+ str(timestamp) + '.csv'
+
+        midi_transcription = remove_annotation_latency(np.array(audio_segment.get_array_of_samples()), midi_transcription, grain=99)
         midi_transcription.to_csv(rect_name, index=True, header=False, sep="\t",
-                                                                    float_format='%.3f')
+                                  float_format='%.3f')
+        print('* recorded audio and midi annotation saved!')
+    print('bye..')

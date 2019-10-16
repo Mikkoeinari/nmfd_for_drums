@@ -3,6 +3,15 @@ This module handles Onset Detection tasks
 '''
 from scipy.signal import argrelmax
 import numpy as np
+from scipy.ndimage.filters import maximum_filter
+
+def spectral_difference(spec):
+    diff = np.log(spec * 1 + 1)
+    diff[1:, :] = np.diff(spec, n=1, axis=0)
+    spec_diff = np.sum(diff, axis=1)
+    spec_diff = np.clip(spec_diff / max(spec_diff), 0, 1)
+    return spec_diff
+
 
 def pick_onsets(F, threshold=0.15, w=3.5):
     """
